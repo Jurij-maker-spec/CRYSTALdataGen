@@ -1,0 +1,37 @@
+distortion_mode: template
+
+structures_dir: structures
+
+only: [AlN]
+
+n_structures: 100
+batch: "010"
+
+supercell: [2, 2, 2]
+overwrite: true
+
+template_file: templates/AlN_template_sc222.npz
+
+template_use_cell_deformation: true
+template_use_frac_disp: true
+
+template_cell_scale: 1.0
+template_atomic_scale: 1.0
+
+reject_on_short_distance: true
+max_generation_attempts_per_structure: 20000
+
+out_tag: sp_template_010_100
+
+ncores: 5
+partition: CPU_rune
+rune: 5
+
+shrink: [4, 4]
+maxcycle: 500
+
+use_gradcal: true
+savewf: false
+mulliken: false
+
+functional: HSESol

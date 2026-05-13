@@ -1,0 +1,41 @@
+distortion_mode: scheduled_random
+
+structures_dir: structures
+
+only: [TiO2_rutil]
+
+n_structures: 200
+rng_seed: 42
+batch: "020"
+
+supercell: null
+overwrite: true
+
+frac_small_disp: 0.10
+frac_medium_disp: 0.09
+frac_strain_only: 0.01
+frac_mixed: 0.80
+
+small_disp_max: 0.010
+medium_disp_max: 0.020
+
+small_strain_max: 0.010
+medium_strain_max: 0.020
+
+reject_on_short_distance: true
+max_generation_attempts_per_structure: 20000
+
+out_tag: sp_scheduled_random_020_200
+
+ncores: 6
+partition: CPU_rune
+rune: 5
+
+shrink: [4, 4]
+maxcycle: 500
+
+use_gradcal: true
+savewf: false
+mulliken: false
+
+functional: HSESol

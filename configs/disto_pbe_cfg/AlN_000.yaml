@@ -1,0 +1,36 @@
+script: mixed_disto_struct.py
+
+root: /home/jha/jha/python_scripts/CRYSTALdataGen
+structures_dir: structures_pbe
+
+only: [AlN_PBE]
+
+cif_file: null
+
+distortion_mode: template
+template_file: structures/AlN/disto/sp_mixed_000_150/disvec_AlN.npz
+
+template_use_cell_deformation: true
+template_use_frac_disp: true
+
+template_cell_scale: 1.0
+template_atomic_scale: 1.0
+
+charge: "000"
+n_structures: 150
+out_tag: sp_from_template_000_150
+
+overwrite: true
+supercell: null
+
+ncores: 6
+partition: CPU_rune
+# partition: GPU_aq
+rune: 5
+
+functional: PBESOLXC
+shrink: [4, 4]
+maxcycle: 500
+use_gradcal: true
+savewf: false
+mulliken: false

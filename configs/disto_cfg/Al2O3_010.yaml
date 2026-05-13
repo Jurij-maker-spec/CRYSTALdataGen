@@ -1,0 +1,35 @@
+script: mixed_disto_struct.py
+
+root: /home/jha/jha/python_scripts/CRYSTALdataGen
+structures_dir: structures
+only: [Al2O3]
+
+cif_file: null
+
+distortion_mode: template
+template_file: structures/Al2O3/disto/sp_mixed_010_100/disvec_Al2O3.npz
+
+template_use_cell_deformation: true
+template_use_frac_disp: true
+
+template_cell_scale: 1.0
+template_atomic_scale: 1.0
+
+charge: "010"
+n_structures: 100
+out_tag: sp_from_template_010_100
+
+overwrite: true
+supercell: null
+
+ncores: 6
+partition: CPU_rune
+# partition: GPU_aq
+# rune: 2
+
+functional: HSEsol
+shrink: [4, 4]
+maxcycle: 500
+use_gradcal: true
+savewf: false
+mulliken: false

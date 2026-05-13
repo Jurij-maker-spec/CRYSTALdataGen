@@ -1,0 +1,10 @@
+# Aesthetic settings
+axes.grid: False
+grid.linestyle: --
+grid.alpha: 0.3
+
+lines.linewidth: 1
+patch.linewidth: 0.5
+
+font.size: 12
+figure.figsize: 8, 5

@@ -1,0 +1,30 @@
+root: /home/jha/jha/python_scripts/CRYSTALdataGen
+structures_dir: structures
+
+only: [Al2O3]
+
+n_structures: 350
+rng_seed: 31415
+charge: "020"
+
+supercell: null
+overwrite: true
+
+disp_max: 0.045
+strain_max: 0.01
+
+ncores: 5
+partition: CPU_rune
+rune: 5
+
+shrink: [4, 4]
+maxcycle: 500
+use_gradcal: true
+savewf: false
+mulliken: false
+functional: HSESol
+
+max_generation_attempts_per_structure: 20000
+reject_on_short_distance: true
+
+

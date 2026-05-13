@@ -1,0 +1,56 @@
+structure: Al2O3
+results_group_dir: Al2O3_10_90
+
+dry_run: false
+smoke_test: false
+max_runs: null
+max_parallel_trainings: 1
+
+crystal_db_path: data/ref_db.h5
+
+eval_settings:
+  device: cuda
+  default_dtype: float64
+  frechet: true
+  fmax: 1.0e-11
+  calculator_mode: "0"
+  compare_crystal_modes: true
+  crystal_hess_path: null
+  crystal_freq_out_path: null
+  crystal_hessian_units: hartree/bohr^2
+
+base_config:
+  train_file: train_Al2O3.xyz
+  valid_file: valid_interp_Al2O3.xyz
+  chem: Al2O3
+  atomic_numbers: [8, 13]
+  model_type: MACELES
+  E0s: average
+  batch_size: 2
+  valid_batch_size: 2
+  max_epochs: 173
+  energy_weight: 1.0
+  forces_weight: 100.0
+  r_max: 3.5
+  use_stress: false
+  stress_weight: 2.0
+  default_dtype: float64
+  device: cuda
+  num_workers: 0
+  use_ema: true
+  use_swa: false
+  restart_latest: false
+  run_extraction: true
+  overwrite_existing_logs: true
+  env:
+    OMP_NUM_THREADS: "1"
+
+sweep_grid:
+  seed: [1, 2]
+  r_max: [3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0]
+  batch_size: [2]
+  valid_batch_size: [2]
+  energy_weight: [1.0, 2.0, 3.0]
+  forces_weight: [100.0]
+  use_stress: [false]
+  stress_weight: [2.0] 

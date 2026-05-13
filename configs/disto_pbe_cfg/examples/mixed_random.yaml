@@ -1,0 +1,33 @@
+distortion_mode: mixed_random
+
+structures_dir: structures
+
+only: [SiO2]
+
+n_structures: 150
+rng_seed: 42
+batch: "000"
+
+supercell: null
+overwrite: true
+
+disp_max: 0.02
+strain_max: 0.01
+
+reject_on_short_distance: true
+max_generation_attempts_per_structure: 20000
+
+out_tag: sp_mixed_random_000_150
+
+ncores: 6
+partition: CPU_rune
+rune: 2
+
+shrink: [4, 4]
+maxcycle: 500
+
+use_gradcal: true
+savewf: false
+mulliken: false
+
+functional: PBESOLXC

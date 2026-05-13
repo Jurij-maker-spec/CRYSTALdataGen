@@ -1,0 +1,14 @@
+distortion_mode: total_random
+
+structures_dir: structures
+
+n_structures: 100
+rng_seed: 42
+batch: "010"
+
+supercell: [2, 2, 2]
+
+disp_max: 0.04
+strain_max: 0.02
+
+functional: HSESol

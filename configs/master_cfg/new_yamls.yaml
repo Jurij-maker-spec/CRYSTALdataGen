@@ -1,0 +1,18 @@
+ eval_settings:
+  device: cuda
+  default_dtype: float64
+  frechet: true
+  fmax: 1.0e-11
+  calculator_mode: "0"
+
+  compare_crystal_modes: true
+  crystal_hess_path: null
+  crystal_freq_out_path: null
+  crystal_hessian_units: "hartree/bohr^2"
+
+  run_phonopy: false
+  phonopy_plugin: null
+
+  write_ref_db: true
+  ref_db_path: data/ref_db.h5
+  

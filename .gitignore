@@ -1,0 +1,77 @@
+ # Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+
+# Environments
+.env
+.venv/
+venv/
+conda-meta/
+*.egg-info/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+*.out
+*.err
+slurm-*.out
+
+# CRYSTAL / DFT outputs
+*.f9
+*.f20
+*.f25
+*.f28
+*.f98
+*.SCFLOG
+*.freqinfo
+*.hessfreq
+*.born
+*.d3
+*.d12~
+fort.*
+RUN.*
+
+# Large data
+*.h5
+*.hdf5
+*.xyz
+*.npz
+*.npy
+*.pt
+*.pth
+*.model
+*.ckpt
+
+# Bash scripts
+*.sh
+
+# Project output folders
+AlN_010_100_sc222_comparison_old_vs_new/
+results/
+models/
+checkpoints/
+plots/
+Plots/
+csv/
+tmp/
+scratch/
+structures/
+structures_pbe/
+data/
+
+# Generated structure/output folders
+*/disto/
+*/freq/
+*/geoopt/
+
+# OS files
+.DS_Store
+Thumbs.db

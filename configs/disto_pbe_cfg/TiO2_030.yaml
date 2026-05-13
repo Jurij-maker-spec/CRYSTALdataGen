@@ -1,0 +1,32 @@
+script: gen_disto_struct.py
+
+root: /home/jha/jha/python_scripts/CRYSTALdataGen
+structures_dir: structures_pbe
+
+only: [TiO2_rutil_PBE]
+
+n_structures: 50
+rng_seed: 991
+charge: "030"
+
+supercell: [2,2,2]
+overwrite: true
+
+disp_max: 0.04
+strain_max: 0.01
+
+ncores: 5
+partition: CPU_rune
+rune: 5
+
+shrink: [4, 4]
+maxcycle: 500
+use_gradcal: true
+savewf: false
+mulliken: false
+functional: PBESOLXC
+
+max_generation_attempts_per_structure: 20000
+reject_on_short_distance: true
+
+

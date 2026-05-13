@@ -1,0 +1,38 @@
+script: mixed_disto_struct.py
+root: /home/jha/jha/python_scripts/CRYSTALdataGen
+structures_dir: structures
+
+only: [TiO2]
+
+n_structures: 150
+rng_seed: 31415
+charge: "020"
+
+supercell: null
+overwrite: true
+
+frac_mdeium_disp: 0.09
+frac_mixed: 0.8
+frac_small_disp: 0.1
+frac_strain_only: 0.01
+
+small_disp_max: 0.04
+small_strain_max: 0.01
+medium_disp_max: 0.06
+medium_strain_max: 0.02
+
+ncores: 5
+partition: CPU_rune
+rune: 5
+
+shrink: [4, 4]
+maxcycle: 500
+use_gradcal: true
+savewf: false
+mulliken: false
+functional: HSESol
+
+max_generation_attempts_per_structure: 20000
+reject_on_short_distance: true
+
+

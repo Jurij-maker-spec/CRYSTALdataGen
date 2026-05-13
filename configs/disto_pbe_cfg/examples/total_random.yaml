@@ -1,0 +1,33 @@
+distortion_mode: total_random
+
+structures_dir: structures
+
+only: [AlN]
+
+n_structures: 100
+rng_seed: 42
+batch: "010"
+
+supercell: [2, 2, 2]
+overwrite: true
+
+disp_max: 0.04
+strain_max: 0.02
+
+reject_on_short_distance: true
+max_generation_attempts_per_structure: 20000
+
+out_tag: sp_total_random_010_100
+
+ncores: 5
+partition: CPU_rune
+rune: 5
+
+shrink: [4, 4]
+maxcycle: 500
+
+use_gradcal: true
+savewf: false
+mulliken: false
+
+functional: HSESol

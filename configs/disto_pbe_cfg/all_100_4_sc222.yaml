@@ -1,0 +1,14 @@
+distortion_mode: total_random
+
+structures_dir: structures_pbe
+
+n_structures: 4
+rng_seed: 7341
+batch: "100"
+
+supercell: [2, 2, 2]
+
+disp_max: 0.045
+strain_max: 0.015
+
+functional: PBESOLXC
