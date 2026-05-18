@@ -1116,15 +1116,32 @@ def main() -> None:
         print(f"Master summary JSON: {master_summary_path}")
         return
 
+    n_total_runs = len(run_config_paths)
+    n_completed = 0
+
     for train_result in run_sweep_parallel(
         run_config_paths=run_config_paths,
         max_parallel=max_parallel,
     ):
+        
+        n_completed += 1
+        progress_pct = 100.0 * n_completed / n_total_runs
+
+        print("\n" + "=" * 90)
+        print(
+            f"[SWEEP {n_completed:03d}/{n_total_runs:03d}] "
+            f"({progress_pct:5.1f}%)"
+        )
+        print("=" * 90)
+
         master_summary["training_results"].append(train_result)
         save_json(master_summary, master_summary_path)
 
         run_name = train_result.get("run_name", "<unknown>")
-        print(f"\n=== Training finished for: {run_name} | status={train_result.get('status')} ===")
+        print(
+            f"Training finished: {run_name} "
+            f"| status={train_result.get('status')}"
+        )
 
         if train_result.get("status") != "ok":
             row = build_eval_row(train_result=train_result, eval_result=None, error=train_result.get("error"))
@@ -1196,11 +1213,13 @@ def main() -> None:
             save_json(master_summary, master_summary_path)
             if best_model is not None:
                 save_json(best_model, best_model_path)
-
-            print(f"Evaluation finished for: {run_name}")
+            print(
+                f"[DONE {n_completed:03d}/{n_total_runs:03d}] "
+                f"{run_name}"
+            )
             if best_model is not None:
                 print(f"Current best model: {best_model['run_name']}")
-                print(f"Current best model path: {best_model['model_path']}")
+                print(f"Composite score   : {best_model['metrics'].get('composite_score')}")
 
         except Exception as exc:
             eval_record = {

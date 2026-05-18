@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 import re
 from ase.io import read
+import argparse
+from datetime import datetime
 
 # ------------------------------------------------------------
 # Project root
@@ -23,8 +25,7 @@ sys.path.insert(0, str(ROOT))
 from util.crystal_parser import CrystalOutputParser
 from util.mark_outliers import mark_outliers
 
-# STRUCTURES_DIR = ROOT / "structures"
-STRUCTURES_DIR = ROOT / "structures_pbe"
+DEFAULT_STRUCTURES_PATTERN = "structures"
 H5_PATH = ROOT / "data" / "train_db.h5"
 
 ATOMIC_OUTPUTS = None
@@ -79,7 +80,12 @@ def write_string_dataset(group, name, value):
     group.create_dataset(name, data=np.bytes_(str(value)))
 
 
-def record_failure(failed_group, distortion_key, outfile, reason, error_msg="", distortion_info=None):
+def record_failure(failed_group, distortion_key, outfile, reason, error_msg="", distortion_info=None, overwrite=False):
+    if distortion_key in failed_group:
+        if overwrite:
+            del failed_group[distortion_key]
+        else:
+            return
     g = failed_group.create_group(distortion_key)
     write_string_dataset(g, "source_file", str(outfile))
     write_string_dataset(g, "source_name", outfile.stem if outfile is not None else "")
@@ -133,8 +139,17 @@ def find_single_outfile(folder: Path):
     if len(outfiles) == 1:
         return outfiles[0]
 
-    # newest file fallback
-    return sort_singlepoint_outs_by_id(outfiles)
+    preferred = [
+        f for f in outfiles
+        if "_freq" in f.name.lower()
+        or "_geoopt" in f.name.lower()
+        or "_sp" in f.name.lower()
+    ]
+
+    if preferred:
+        return sorted(preferred, key=lambda p: p.stat().st_mtime)[-1]
+
+    return sorted(outfiles, key=lambda p: p.stat().st_mtime)[-1]
 
 
 def find_clean_cif(folder):
@@ -347,15 +362,16 @@ def parse_and_write_primitive_reference(struct_group, geoopt_out: Path, freq_out
     return True
 
 
-def parse_and_write_distortions(struct_group, singlepoint_outs):
-    distortions_group = overwrite_group(struct_group, "distortions")
-    failed_group = overwrite_group(struct_group, "failed_distortions")
+def parse_and_write_distortions(struct_group, singlepoint_outs, overwrite=False):
+    distortions_group = struct_group.require_group("distortions")
+    failed_group = struct_group.require_group("failed_distortions")
 
     n_found = len(singlepoint_outs)
     n_written = 0
+    n_skipped = 0
     n_failed = 0
 
-    used_keys = set()
+    used_keys = set(distortions_group.keys()) | set(failed_group.keys())
 
     for outfile in singlepoint_outs:
         distortion_info = extract_distortion_id(outfile)
@@ -363,16 +379,30 @@ def parse_and_write_distortions(struct_group, singlepoint_outs):
         if distortion_info is not None:
             distortion_key = distortion_info["raw"]
         else:
-            # fallback if no 6-digit folder found
-            distortion_key = f"unknown_{n_failed + n_written:06d}"
+            distortion_key = f"unknown_{n_failed + n_written + n_skipped:06d}"
 
-        # prevent accidental duplicate keys
-        if distortion_key in used_keys:
+        if distortion_key in distortions_group:
+            if overwrite:
+                del distortions_group[distortion_key]
+            else:
+                n_skipped += 1
+                continue
+
+        if distortion_key in failed_group:
+            if overwrite:
+                del failed_group[distortion_key]
+            else:
+                n_skipped += 1
+                continue
+
+        # prevent duplicate keys during same run
+        if distortion_key in used_keys and overwrite:
             suffix = 1
-            new_key = f"{distortion_key}_dup{suffix}"
+            base_key = distortion_key
+            new_key = f"{base_key}_dup{suffix}"
             while new_key in used_keys:
                 suffix += 1
-                new_key = f"{distortion_key}_dup{suffix}"
+                new_key = f"{base_key}_dup{suffix}"
             distortion_key = new_key
 
         used_keys.add(distortion_key)
@@ -387,6 +417,7 @@ def parse_and_write_distortions(struct_group, singlepoint_outs):
                 reason=result,
                 error_msg=err,
                 distortion_info=distortion_info,
+                overwrite=overwrite,
             )
             n_failed += 1
             continue
@@ -404,17 +435,22 @@ def parse_and_write_distortions(struct_group, singlepoint_outs):
 
         n_written += 1
 
-    distortions_group.attrs["n_distortions"] = n_written
-    failed_group.attrs["n_failed"] = n_failed
+    distortions_group.attrs["n_distortions"] = len(distortions_group)
+    failed_group.attrs["n_failed"] = len(failed_group)
 
-    struct_group.attrs["n_singlepoints_found"] = n_found
-    struct_group.attrs["n_distortions_written"] = n_written
-    struct_group.attrs["n_distortions_failed"] = n_failed
+    struct_group.attrs["n_singlepoints_found_last_scan"] = n_found
+    struct_group.attrs["n_distortions_written_last_scan"] = n_written
+    struct_group.attrs["n_distortions_skipped_last_scan"] = n_skipped
+    struct_group.attrs["n_distortions_failed_last_scan"] = n_failed
+    struct_group.attrs["n_distortions_total"] = len(distortions_group)
+    struct_group.attrs["n_failed_distortions_total"] = len(failed_group)
 
     return {
         "found": n_found,
         "written": n_written,
+        "skipped": n_skipped,
         "failed": n_failed,
+        "total": len(distortions_group),
     }
 
 
@@ -462,99 +498,270 @@ def write_atomic_energies(h5):
     )
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Build/update CRYSTAL train DB.")
+
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=H5_PATH,
+        help="Output HDF5 train database.",
+    )
+
+    parser.add_argument(
+        "--structures-root",
+        type=Path,
+        default=None,
+        help=(
+            "Optional single structures directory. "
+            "If omitted, all directories under ROOT containing 'structures' are scanned."
+        ),
+    )
+
+    parser.add_argument(
+        "--only",
+        nargs="*",
+        default=None,
+        help="Optional structure names to process.",
+    )
+
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing structure groups completely.",
+    )
+
+    parser.add_argument(
+        "--no-outliers",
+        action="store_true",
+        help="Skip mark_outliers() after DB build.",
+    )
+
+    return parser.parse_args()
+
+
+def discover_structure_roots(root: Path, explicit_root: Path | None = None) -> list[Path]:
+    """
+    Find directories like:
+        structures
+        structures_pbe
+        structures_pbesol
+
+    If explicit_root is given, use only that directory.
+    """
+    if explicit_root is not None:
+        explicit_root = explicit_root.resolve()
+        if not explicit_root.exists():
+            raise FileNotFoundError(f"Missing structures root: {explicit_root}")
+        if not explicit_root.is_dir():
+            raise NotADirectoryError(f"Not a directory: {explicit_root}")
+        return [explicit_root]
+
+    roots = sorted(
+        p for p in root.iterdir()
+        if p.is_dir() and "structures" in p.name.lower()
+    )
+
+    if not roots:
+        raise FileNotFoundError(
+            f"No directories containing 'structures' found under {root}"
+        )
+
+    return roots
+
+
+def structure_db_key(struct_dir: Path, structures_root: Path) -> str:
+    """
+    Avoid collisions between:
+        structures/SiO2
+        structures_pbe/SiO2
+
+    If the structure folder already contains a suffix, keep it.
+    Otherwise append suffix from parent root for non-default roots.
+    """
+    name = struct_dir.name
+    root_name = structures_root.name.lower()
+
+    if root_name == "structures":
+        return name
+
+    suffix = root_name.replace("structures", "").strip("_")
+
+    if not suffix:
+        return name
+
+    suffix_upper = suffix.upper()
+
+    if name.upper().endswith(f"_{suffix_upper}"):
+        return name
+
+    return f"{name}_{suffix_upper}"
+
+
 # ============================================================
 # MAIN
 # ============================================================
 
-def build_dataset():
-    H5_PATH.parent.mkdir(parents=True, exist_ok=True)
+def build_dataset(
+    h5_path: Path = H5_PATH,
+    structures_root: Path | None = None,
+    only: list[str] | None = None,
+    overwrite: bool = False,
+    run_outliers: bool = True,
+):
+    h5_path = Path(h5_path).resolve()
+    h5_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with h5py.File(H5_PATH, "w") as h5:
-        structures_group = h5.create_group("structures")
-        struct_dirs = sorted([p for p in STRUCTURES_DIR.iterdir() if p.is_dir()])
+    structure_roots = discover_structure_roots(ROOT, explicit_root=structures_root)
+    only_set = set(only) if only else None
 
-        summaries = []
+    summaries = []
 
-        for struct_dir in struct_dirs:
-            name = struct_dir.name
-            print("-" * 72)
-            print(f'Processing {name}:  ')
-            print("-" * 72)
-            mat_group = structures_group.create_group(name)
+    mode = "a"
+    with h5py.File(h5_path, mode) as h5:
+        structures_group = h5.require_group("structures")
 
-            geoopt_out, clean_cif = find_geoopt_out(struct_dir)
-            freq_out = find_freq_out(struct_dir)
-            singlepoint_outs = find_singlepoint_outs(struct_dir)
+        for root_dir in structure_roots:
+            struct_dirs = sorted([p for p in root_dir.iterdir() if p.is_dir()])
 
+            print("=" * 72)
+            print(f"Scanning structure root: {root_dir}")
+            print("=" * 72)
 
-            has_reference = False
-            has_primitive = False
+            for struct_dir in struct_dirs:
+                source_name = struct_dir.name
+                db_name = structure_db_key(struct_dir, root_dir)
 
-            if (geoopt_out and clean_cif) is not None:
-                print('Found ref and cif')
-                is_reference = True
-                parse_and_write_reference(mat_group, geoopt_out, clean_cif, is_reference)
-                has_reference = True
+                if only_set is not None and source_name not in only_set and db_name not in only_set:
+                    continue
 
-            if geoopt_out is not None and freq_out is not None:
-                parse_and_write_primitive_reference(mat_group, geoopt_out, freq_out)
-                has_primitive = True
+                print("-" * 72)
+                print(f"Processing source={source_name} -> db_key={db_name}")
+                print("-" * 72)
 
-            if singlepoint_outs:
-                dsum = parse_and_write_distortions(mat_group, singlepoint_outs)
-            else:
-                dsum = {"found": 0, "written": 0, "failed": 0}
-                mat_group.attrs["n_singlepoints_found"] = 0
-                mat_group.attrs["n_distortions_written"] = 0
-                mat_group.attrs["n_distortions_failed"] = 0
+                if db_name in structures_group:
+                    if overwrite:
+                        print(f"  overwriting existing structure group: {db_name}")
+                        del structures_group[db_name]
+                        mat_group = structures_group.create_group(db_name)
+                    else:
+                        print(f"  updating existing structure group: {db_name}")
+                        mat_group = structures_group[db_name]
+                else:
+                    mat_group = structures_group.create_group(db_name)
 
-            mat_group.attrs["structure_name"] = name
-            mat_group.attrs["source_dir"] = str(struct_dir)
+                geoopt_out, clean_cif = find_geoopt_out(struct_dir)
+                freq_out = find_freq_out(struct_dir)
+                singlepoint_outs = find_singlepoint_outs(struct_dir)
 
-            summaries.append({
-                "name": name,
-                "reference": has_reference,
-                "primitive": has_primitive,
-                "found": dsum["found"],
-                "written": dsum["written"],
-                "failed": dsum["failed"],
-            })
+                has_reference = "reference" in mat_group
+                has_primitive = "primitive_reference" in mat_group
 
-        write_atomic_energies(h5)
+                if geoopt_out is not None and clean_cif is not None:
+                    if overwrite or "reference" not in mat_group:
+                        print("  writing reference")
+                        is_reference = True
+                        ok_ref = parse_and_write_reference(
+                            mat_group,
+                            geoopt_out,
+                            clean_cif,
+                            is_reference,
+                        )
+                        has_reference = bool(ok_ref)
+                    else:
+                        print("  reference exists, skipping")
 
-        # global metadata
+                if geoopt_out is not None and freq_out is not None:
+                    if overwrite or "primitive_reference" not in mat_group:
+                        print("  writing primitive_reference")
+                        ok_prim = parse_and_write_primitive_reference(
+                            mat_group,
+                            geoopt_out,
+                            freq_out,
+                        )
+                        has_primitive = bool(ok_prim)
+                    else:
+                        print("  primitive_reference exists, skipping")
+
+                if singlepoint_outs:
+                    dsum = parse_and_write_distortions(
+                        mat_group,
+                        singlepoint_outs,
+                        overwrite=overwrite,
+                    )
+                else:
+                    dsum = {
+                        "found": 0,
+                        "written": 0,
+                        "skipped": 0,
+                        "failed": 0,
+                        "total": len(mat_group.get("distortions", {})),
+                    }
+                    mat_group.attrs["n_singlepoints_found_last_scan"] = 0
+                    mat_group.attrs["n_distortions_written_last_scan"] = 0
+                    mat_group.attrs["n_distortions_skipped_last_scan"] = 0
+                    mat_group.attrs["n_distortions_failed_last_scan"] = 0
+
+                mat_group.attrs["structure_name"] = db_name
+                mat_group.attrs["source_structure_name"] = source_name
+                mat_group.attrs["source_dir"] = str(struct_dir)
+                mat_group.attrs["source_structures_root"] = str(root_dir)
+                mat_group.attrs["last_updated"] = datetime.now().isoformat(timespec="seconds")
+
+                summaries.append({
+                    "name": db_name,
+                    "source": source_name,
+                    "root": root_dir.name,
+                    "reference": has_reference,
+                    "primitive": has_primitive,
+                    "found": dsum["found"],
+                    "written": dsum["written"],
+                    "skipped": dsum["skipped"],
+                    "failed": dsum["failed"],
+                    "total": dsum["total"],
+                })
+
+        if overwrite or "atomic_energies" not in h5:
+            write_atomic_energies(h5)
+
         h5.attrs["root"] = str(ROOT)
-        h5.attrs["structures_dir"] = str(STRUCTURES_DIR)
+        h5.attrs["structure_roots"] = ",".join(str(p) for p in structure_roots)
         h5.attrs["energy_unit"] = "eV"
         h5.attrs["force_unit"] = "eV/Angstrom"
         h5.attrs["stress_note"] = "Stored as returned by parser.get_stress()"
         h5.attrs["created_from"] = "CRYSTALdataGen project structure"
+        h5.attrs["last_updated"] = datetime.now().isoformat(timespec="seconds")
+        h5.attrs["update_mode"] = "overwrite" if overwrite else "incremental"
 
-        print("\nStructure summary")
-    print("-" * 72)
+    print("\nStructure summary")
+    print("-" * 96)
 
     total_found = 0
     total_written = 0
+    total_skipped = 0
     total_failed = 0
     total_ref = 0
     total_prim = 0
 
     for s in summaries:
-
         ref_flag = "yes" if s["reference"] else "no"
         prim_flag = "yes" if s["primitive"] else "no"
 
         print(
-            f"{s['name']:<16} "
+            f"{s['name']:<20} "
+            f"root={s['root']:<15} "
             f"ref={ref_flag:<3} "
             f"prim={prim_flag:<3} "
-            f"sp_found={s['found']:<4} "
-            f"written={s['written']:<4} "
-            f"failed={s['failed']:<4}"
+            f"found={s['found']:<5} "
+            f"new={s['written']:<5} "
+            f"skip={s['skipped']:<5} "
+            f"fail={s['failed']:<5} "
+            f"total={s['total']:<5}"
         )
 
         total_found += s["found"]
         total_written += s["written"]
+        total_skipped += s["skipped"]
         total_failed += s["failed"]
 
         if s["reference"]:
@@ -563,21 +770,34 @@ def build_dataset():
         if s["primitive"]:
             total_prim += 1
 
-
-    print("-" * 72)
-
+    print("-" * 96)
     print(
-        f"{'TOTAL':<16} "
+        f"{'TOTAL':<20} "
         f"ref={total_ref:<3} "
         f"prim={total_prim:<3} "
-        f"sp_found={total_found:<4} "
-        f"written={total_written:<4} "
-        f"failed={total_failed:<4}"
+        f"found={total_found:<5} "
+        f"new={total_written:<5} "
+        f"skip={total_skipped:<5} "
+        f"fail={total_failed:<5}"
     )
-    print('\nmarking outliers\n')
-    mark_outliers()
-    print(f"\nDone. Wrote: {H5_PATH}")
+
+    if run_outliers:
+        print("\nmarking outliers\n")
+        mark_outliers()
+    else:
+        print("\noutlier marking skipped\n")
+
+    print(f"\nDone. Updated: {h5_path}")
 
 
 if __name__ == "__main__":
-    build_dataset()
+    args = parse_args()
+
+    build_dataset(
+        h5_path=args.db,
+        structures_root=args.structures_root,
+        only=args.only,
+        overwrite=args.overwrite,
+        run_outliers=not args.no_outliers,
+    )
+    
