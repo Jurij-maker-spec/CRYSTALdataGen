@@ -570,6 +570,19 @@ def choose_best_model(master_summary: dict[str, Any]) -> dict[str, Any] | None:
     return build_best_model_record(best)
 
 
+def eval_cif_structure_name(structure: str) -> str:
+    """
+    Evaluation CIFs use the original structure name, not functional suffixes.
+
+    Example:
+        SiO2_PBE -> SiO2
+        AlN_PBE  -> AlN
+    """
+    for suffix in ("_PBE", "_PBESOLXC", "_PBESOL", "_HSESOL", "_HSE"):
+        if structure.upper().endswith(suffix):
+            return structure[: -len(suffix)]
+    return structure
+
 
 # ============================================================
 # EVAL ONLY HELPERS
@@ -985,14 +998,12 @@ def main() -> None:
     if missing:
         raise KeyError(f"Missing required config keys: {missing}")
 
-    
-    # TODO fix PBE suffix issue
     structure = cfg["structure"]
     results_group_dir = cfg.get("results_group_dir", structure)
+    eval_cif_structure = eval_cif_structure_name(structure)
     cif_path = require_path(
-        cfg.get("cif_path", f"inference/CIFs/{structure}.cif")
+        cfg.get("cif_path", f"inference/CIFs/{eval_cif_structure}.cif")
     )
-
     crystal_db_path = require_path(
         cfg["crystal_db_path"],
         base=PROJECT_ROOT,

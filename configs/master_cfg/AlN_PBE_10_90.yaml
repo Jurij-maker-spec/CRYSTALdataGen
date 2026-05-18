@@ -1,5 +1,5 @@
-structure: SiO2_PBE
-results_group_dir: SiO2_PBE_1000_10_90
+structure: AlN_PBE
+results_group_dir: AlN_PBE_10_90
 
 dry_run: false
 smoke_test: false
@@ -20,10 +20,10 @@ eval_settings:
   crystal_hessian_units: hartree/bohr^2
 
 base_config:
-  train_file: train_SiO2_PBE_895.xyz
-  valid_file: valid_SiO2_PBE_99.xyz
-  chem: SiO2
-  atomic_numbers: [8, 14]
+  train_file: train_AlN_PBE_540.xyz
+  valid_file: valid_AlN_PBE_60.xyz
+  chem: AlN
+  atomic_numbers: [7, 13]
   model_type: MACELES
   E0s: average
   batch_size: 2
@@ -47,7 +47,7 @@ base_config:
 
 sweep_grid:
   seed: [1, 2, 3]
-  r_max: [3.0, 3.25, 4.0, 4.25]
+  r_max: [3.0, 4.0, 5.25, 5.5, 5.75]
   batch_size: [2]
   valid_batch_size: [2]
   energy_weight: [1.0]
