@@ -1,5 +1,5 @@
-structure: SiO2
-results_group_dir: SiO2_1000_10_90
+structure: SiO2_PBE
+results_group_dir: SiO2_PBE_1000_10_90
 
 dry_run: false
 smoke_test: false
@@ -20,8 +20,8 @@ eval_settings:
   crystal_hessian_units: hartree/bohr^2
 
 base_config:
-  train_file: train_SiO2_890.xyz
-  valid_file: valid_SiO2_99.xyz
+  train_file: train_SiO2_PBE_895
+  valid_file: valid_SiO2_PBE_99
   chem: SiO2
   atomic_numbers: [8, 14]
   model_type: MACELES

@@ -957,7 +957,8 @@ def resolve_existing_sweep_dir(sweep_dir: Path) -> Path:
 
 def main() -> None:
     args = parse_args()
-    cfg = load_yaml(args.config)
+    config_root = PROJECT_ROOT / 'configs/master_cfg' / str(args.config)
+    cfg = load_yaml(config_root)
 
     # ============================================================
     # Check correct environment
