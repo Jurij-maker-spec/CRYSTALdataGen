@@ -24,6 +24,15 @@ conda-meta/
 *.err
 slurm-*.out
 
+# tex outputs
+*.tex
+*.gz
+*.aux
+*.fdb_latexmk
+*.fls
+*.toc
+
+
 # CRYSTAL / DFT outputs
 *.f9
 *.f20
@@ -66,6 +75,7 @@ scratch/
 structures/
 structures_pbe/
 data/
+manual/
 
 # Generated structure/output folders
 */disto/
