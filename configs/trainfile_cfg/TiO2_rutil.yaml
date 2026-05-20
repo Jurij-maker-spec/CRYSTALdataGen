@@ -1,6 +1,6 @@
 project_root: /home/jha/jha/python_scripts/CRYSTALdataGen
 
-h5_path: data/dataset.h5
+h5_path: data/train_db.h5
 export_metadata_json: data/tv_meta.json
 
 train_xyz: data/train.xyz

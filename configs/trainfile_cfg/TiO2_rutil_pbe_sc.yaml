@@ -3,8 +3,8 @@ project_root: /home/jha/jha/python_scripts/CRYSTALdataGen
 h5_path: data/train_db.h5
 export_metadata_json: data/tv_meta.json
 
-train_xyz: data/train.xyz
-valid_xyz: data/valid.xyz
+train_xyz: data/sc_train.xyz
+valid_xyz: data/sc_valid.xyz
 
 rng_seed: 31415
 
@@ -22,10 +22,10 @@ filter_references_by_training_flag: false
 allow_small_compositions: true
 
 structure_selection_mode: one
-structure_name: Al2O3
+structure_name: TiO2_rutil_PBE
 structure_names: null
 
 use_structure_suffix_in_output: true
 
 distortion_id_prefix: null
-distortion_id_prefixes: null
+distortion_id_prefixes: ['030', '200', '210', '220']

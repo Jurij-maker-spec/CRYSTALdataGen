@@ -22,7 +22,7 @@ filter_references_by_training_flag: false
 allow_small_compositions: true
 
 structure_selection_mode: one
-structure_name: Al2O3
+structure_name: TiO2_rutil_PBE
 structure_names: null
 
 use_structure_suffix_in_output: true
