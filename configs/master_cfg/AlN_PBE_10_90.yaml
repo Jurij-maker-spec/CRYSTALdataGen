@@ -7,7 +7,7 @@ max_runs: null
 max_parallel_trainings: 1
 
 crystal_db_path: data/ref_db.h5
-resume_sweep_dir: results/AlN_10_90/AlN_PBE_master_eval_full_260518_155033
+resume_sweep_dir: results/AlN_PBE_10_90/AlN_PBE_master_eval_full_260518_155033
 
 eval_settings:
   device: cuda

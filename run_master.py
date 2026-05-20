@@ -236,7 +236,8 @@ def main() -> None:
     results_group_dir = cfg.get("results_group_dir", structure)
     eval_cif_structure = eval_cif_structure_name(structure)
     cif_path = require_path(
-        cfg.get("cif_path", f"inference/CIFs/{eval_cif_structure}.cif")
+        cfg.get("cif_path", f"inference/CIFs/{eval_cif_structure}.cif"),
+        base=PROJECT_ROOT
     )
     crystal_db_path = require_path(
         cfg["crystal_db_path"],
