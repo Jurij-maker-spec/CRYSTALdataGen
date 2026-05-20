@@ -45,6 +45,22 @@ if str(INFERENCE_DIR) not in sys.path:
 from sweep_training import prepare_sweep, run_sweep_parallel, BASE_CONFIG, DEFAULT_SWEEP_GRID
 from inference import evaluate_model
 
+from util.io import ensure_dir, load_json, load_yaml, save_json
+from util.eval import (
+    append_master_csv,
+    build_eval_row,
+    choose_best_model,
+    choose_model_path,
+    eval_cif_structure_name,
+    is_eval_complete,
+    make_compact_eval_record,
+    now_iso,
+    run_single_model_eval,
+)
+from util.common_helpers import (
+    require_path,
+    resolve_path
+)
 
 # ============================================================
 # USER CONFIG
@@ -55,40 +71,25 @@ USE_DEPLOY_MODEL_IF_AVAILABLE = False
 
 
 # ============================================================
-# YAML CONFIG
-# ============================================================
-
-def load_yaml(path: Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-
-    if not isinstance(cfg, dict):
-        raise ValueError(f"Config file is empty or invalid: {path}")
-
-    return cfg
-
-
-def resolve_path(value: str | None, base: Path = PROJECT_ROOT) -> Path | None:
-    if value is None:
-        return None
-
-    p = Path(value)
-    if p.is_absolute():
-        return p
-
-    return base / p
-
-
-
-# ============================================================
 # HELPERS
 # ============================================================
 
-def require_path(value: str, base: Path = PROJECT_ROOT) -> Path:
-    p = resolve_path(value, base=base)
-    if p is None:
-        raise ValueError("Required path is None")
-    return p
+
+def resolve_resume_sweep_dir(value: str | Path) -> Path:
+    p = Path(value)
+
+    if p.is_absolute():
+        resolved = p
+    else:
+        resolved = PROJECT_ROOT / p
+
+    if not resolved.exists():
+        raise FileNotFoundError(f"Missing resume sweep directory: {resolved}")
+
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"Resume path is not a directory: {resolved}")
+
+    return resolved
 
 
 def parse_mace_rmse_table_from_train_log(train_log_path: Path) -> dict[str, Any]:
@@ -143,45 +144,6 @@ def get_train_log_metrics(train_result: dict[str, Any]) -> dict[str, Any]:
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
-
-
-def ensure_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-
-
-def to_serializable(obj):
-    if isinstance(obj, Path):
-        return str(obj)
-
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-
-    if isinstance(obj, (np.bool_,)):
-        return bool(obj)
-
-    if isinstance(obj, dict):
-        return {str(k): to_serializable(v) for k, v in obj.items()}
-
-    if isinstance(obj, (list, tuple)):
-        return [to_serializable(v) for v in obj]
-
-    return obj
-
-
-def save_json(payload: dict[str, Any], path: Path) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(to_serializable(payload), f, indent=2, sort_keys=True)
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
 
 
 def append_master_csv(row: dict[str, Any], csv_path: Path) -> None:
@@ -585,316 +547,6 @@ def eval_cif_structure_name(structure: str) -> str:
 
 
 # ============================================================
-# EVAL ONLY HELPERS
-# ============================================================
-
-def find_existing_run_dirs(sweep_root: Path) -> list[Path]:
-    run_dirs: list[Path] = []
-
-    for child in sorted(sweep_root.iterdir()):
-        if not child.is_dir():
-            continue
-
-        if not (child / "run_config.json").exists():
-            continue
-
-        has_model = False
-
-        models_dir = child / "models"
-        checkpoints_dir = child / "checkpoints"
-
-        if models_dir.exists() and any(models_dir.glob("*.model")):
-            has_model = True
-
-        #if checkpoints_dir.exists() and any(checkpoints_dir.glob("*.model")):
-        #    has_model = True
-
-        if has_model:
-            run_dirs.append(child)
-
-    return run_dirs
-
-
-def choose_existing_model_path(run_dir: Path) -> Path:
-    models = sorted((run_dir / "models").glob("*.model"))
-    if models:
-        return models[-1]
-
-    checkpoint_models = sorted((run_dir / "checkpoints").glob("*.model"))
-    if checkpoint_models:
-        return checkpoint_models[-1]
-
-    raise FileNotFoundError(f"No .model file found in {run_dir}")
-
-
-def build_train_result_from_existing_run(run_dir: Path) -> dict[str, Any]:
-    run_config_path = run_dir / "run_config.json"
-    run_cfg = load_json(run_config_path)
-
-    model_path = choose_existing_model_path(run_dir)
-
-    train_result_path = run_dir / "train_result.json"
-    old_train_result = load_json(train_result_path) if train_result_path.exists() else {}
-
-    return {
-        "run_name": run_cfg.get("run_name", run_dir.name),
-        "status": "ok",
-        "result_dir": str(run_dir),
-        "run_config_path": str(run_config_path),
-        "trained_model_path": str(model_path),
-        "deploy_model_path": old_train_result.get("deploy_model_path"),
-        "error": None,
-    }
-
-
-
-# ============================================================
-# EVAL ONLY
-# ============================================================
-
-def preview_existing_eval_runs(
-        sweep_root: Path,
-        structure: str,
-        max_eval_runs: int | None = None,
-        ) -> list[dict[str, Any]]:
-    run_dirs = find_existing_run_dirs(sweep_root)
-
-    if max_eval_runs is not None:
-        run_dirs = run_dirs[:max_eval_runs]
-
-    previews: list[dict[str, Any]] = []
-
-    for run_dir in run_dirs:
-        run_config_path = run_dir / "run_config.json"
-
-        try:
-            run_cfg = load_json(run_config_path)
-            model_path = choose_existing_model_path(run_dir)
-            eval_summary_path = run_dir / f"{structure}_eval_summary.json"
-            eval_arrays_path = run_dir / f"{structure}_eval_arrays.npz"
-
-            previews.append({
-                "run_name": run_cfg.get("run_name", run_dir.name),
-                "run_dir": str(run_dir),
-                "run_config": str(run_config_path),
-                "model_path": str(model_path),
-                "eval_summary_exists": eval_summary_path.exists(),
-                "eval_arrays_exists": eval_arrays_path.exists(),
-            })
-
-        except Exception as exc:
-            previews.append({
-                "run_name": run_dir.name,
-                "run_dir": str(run_dir),
-                "run_config": str(run_config_path),
-                "model_path": None,
-                "error": repr(exc),
-            })
-
-    return previews
-
-
-def run_eval_only_existing_sweep(
-    sweep_root: Path,
-    structure: str,
-    cif_path: Path,
-    crystal_db_path: Path,
-    eval_settings: dict[str, Any],
-    max_eval_runs: int | None = None,
-    dry_run: bool = False,
-) -> None:
-    
-    if not cif_path.exists():
-        raise FileNotFoundError(f"Missing CIF: {cif_path}")
-    if not crystal_db_path.exists():
-        raise FileNotFoundError(f"Missing CRYSTAL DB: {crystal_db_path}")
-
-    run_dirs = find_existing_run_dirs(sweep_root)
-
-    if dry_run:
-        previews = preview_existing_eval_runs(
-            sweep_root=sweep_root,
-            structure=structure,
-            max_eval_runs=max_eval_runs,
-
-        )
-
-        print(f"Eval-only dry run sweep root: {sweep_root}")
-        print(f"Runs found: {len(previews)}")
-        print()
-
-        for i, preview in enumerate(previews, start=1):
-            print(f"[{i}] {preview['run_name']}")
-            print(f"  run_dir: {preview['run_dir']}")
-            print(f"  run_config: {preview['run_config']}")
-            print(f"  model_path: {preview.get('model_path')}")
-            print(f"  eval_summary_exists: {preview.get('eval_summary_exists')}")
-            print(f"  eval_arrays_exists: {preview.get('eval_arrays_exists')}")
-
-            if preview.get("error"):
-                print(f"  error: {preview['error']}")
-
-            print()
-
-        return
-
-
-    if max_eval_runs is not None:
-        run_dirs = run_dirs[:max_eval_runs]
-
-    master_summary_path = sweep_root / "master_summary.json"
-    master_csv_path = sweep_root / "master_summary.csv"
-    best_model_path = sweep_root / "best_model.json"
-
-    if master_csv_path.exists():
-        master_csv_path.unlink()
-
-    master_summary: dict[str, Any] = {
-        "sweep_name": sweep_root.name,
-        "created_at": now_iso(),
-        "mode": "eval_only",
-        "project_root": str(PROJECT_ROOT),
-        "sweep_root": str(sweep_root),
-        "structure": structure,
-        "cif_path": str(cif_path),
-        "crystal_db_path": str(crystal_db_path),
-        "max_eval_runs": max_eval_runs,
-        "use_deploy_model_if_available": USE_DEPLOY_MODEL_IF_AVAILABLE,
-        "eval_settings": deepcopy(eval_settings),
-        "n_existing_runs_found": len(run_dirs),
-        "training_results": [],
-        "evaluation_results": [],
-        "best_model": None,
-    }
-
-    save_json(master_summary, master_summary_path)
-
-    print(f"Eval-only sweep root: {sweep_root}")
-    print(f"Run directories found: {len(run_dirs)}")
-
-    for run_dir in run_dirs:
-        train_result = build_train_result_from_existing_run(run_dir)
-        master_summary["training_results"].append(train_result)
-        save_json(master_summary, master_summary_path)
-
-        run_name = train_result.get("run_name", run_dir.name)
-
-        try:
-            model_path = choose_model_path(train_result)
-            result_dir = Path(train_result["result_dir"])
-
-            print(f"\n=== Starting evaluation for existing run: {run_name} ===")
-            print(f"Using model: {model_path}")
-
-            eval_result = evaluate_model(
-                model_path=model_path,
-                structure=structure,
-                cif_path=cif_path,
-                output_dir=result_dir,
-                crystal_db_path=crystal_db_path,
-                device=eval_settings["device"],
-                default_dtype=eval_settings["default_dtype"],
-                frechet=eval_settings["frechet"],
-                fmax=eval_settings["fmax"],
-                calculator_mode=eval_settings["calculator_mode"],
-                compare_crystal_modes=eval_settings["compare_crystal_modes"],
-                crystal_hess_path=eval_settings["crystal_hess_path"],
-                crystal_freq_out_path=eval_settings["crystal_freq_out_path"],
-                crystal_hessian_units=eval_settings["crystal_hessian_units"],
-                # reserved plugin interface
-                run_phonopy=eval_settings.get("run_phonopy", False),
-                phonopy_plugin=eval_settings.get("phonopy_plugin"),
-                write_ref_db=eval_settings.get("write_ref_db", False),
-                ref_db_path=eval_settings.get("ref_db_path"),
-                run_id=run_name,
-                dataset_split=sweep_root.parent.name,
-                sweep_id=sweep_root.name,
-            )
-
-            eval_record = {
-                "run_name": run_name,
-                "status": "ok",
-                "evaluated_at": now_iso(),
-                "train_result": train_result,
-                "eval_result": {
-                    "n_imag_modes": eval_result.get("n_imag_modes"),
-                    "n_ir_active_modes": eval_result.get("n_ir_active_modes"),
-                    "zpe_eV": eval_result.get("zpe_eV"),
-                    "crystal_comparison": {
-                        "spectrum_rel_l2": eval_result.get("crystal_comparison", {}).get("spectrum_rel_l2"),
-                    },
-                    "ranking_metrics": eval_result.get("ranking_metrics", {}),
-                    "artifacts": eval_result.get("artifacts", {}),
-                },
-                "ref_db": eval_result.get("ref_db", {}),
-            }
-
-            master_summary["evaluation_results"].append(eval_record)
-
-            row = build_eval_row(
-                train_result=train_result,
-                eval_result=eval_result,
-                error=None,
-            )
-            append_master_csv(row, master_csv_path)
-
-            best_model = choose_best_model(master_summary)
-            master_summary["best_model"] = best_model
-            save_json(master_summary, master_summary_path)
-
-            if best_model is not None:
-                save_json(best_model, best_model_path)
-
-            print(f"Evaluation finished for: {run_name}")
-
-            if best_model is not None:
-                print(f"Current best model: {best_model['run_name']}")
-                print(f"Current best model path: {best_model['model_path']}")
-
-        except Exception as exc:
-            eval_record = {
-                "run_name": run_name,
-                "status": "failed",
-                "evaluated_at": now_iso(),
-                "train_result": train_result,
-                "error": repr(exc),
-                "traceback": traceback.format_exc(),
-            }
-
-            master_summary["evaluation_results"].append(eval_record)
-
-            row = build_eval_row(
-                train_result=train_result,
-                eval_result=None,
-                error=repr(exc),
-            )
-            append_master_csv(row, master_csv_path)
-
-            best_model = choose_best_model(master_summary)
-            master_summary["best_model"] = best_model
-            save_json(master_summary, master_summary_path)
-
-            if best_model is not None:
-                save_json(best_model, best_model_path)
-
-            print(f"Evaluation failed for: {run_name}")
-            print(repr(exc))
-
-    master_summary["best_model"] = choose_best_model(master_summary)
-    master_summary["finished_at"] = now_iso()
-    save_json(master_summary, master_summary_path)
-
-    if master_summary["best_model"] is not None:
-        save_json(master_summary["best_model"], best_model_path)
-
-    print("\nEval-only sweep finished.")
-    print(f"Master summary JSON: {master_summary_path}")
-    print(f"Master summary CSV : {master_csv_path}")
-    print(f"Best model JSON    : {best_model_path}")
-
-
-
-# ============================================================
 # MAIN
 # ============================================================
 
@@ -911,26 +563,9 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--eval-only",
+        "--resume",
         action="store_true",
-        help="Rerun only the evaluation/inference part for one existing sweep master directory.",
-    )
-
-    parser.add_argument(
-        "--sweep-dir",
-        type=Path,
-        default=None,
-        help=(
-            "Existing sweep master directory for --eval-only. "
-            "Can be absolute or relative to PROJECT_ROOT/results."
-        ),
-    )
-
-    parser.add_argument(
-        "--max-eval-runs",
-        type=int,
-        default=None,
-        help="Optional limit for number of run directories evaluated in --eval-only mode.",
+        help="Resume an existing sweep from cfg['resume_sweep_dir'].",
     )
 
     parser.add_argument(
@@ -1025,23 +660,6 @@ def main() -> None:
     sweep_grid = deepcopy(DEFAULT_SWEEP_GRID)
     sweep_grid.update(cfg["sweep_grid"])
 
-    
-    if args.eval_only:
-        if args.sweep_dir is None:
-            raise ValueError("--sweep-dir is required with --eval-only")
-
-        sweep_root = resolve_existing_sweep_dir(args.sweep_dir)
-        run_eval_only_existing_sweep(
-            sweep_root=sweep_root,
-            structure=structure,
-            cif_path=cif_path,
-            crystal_db_path=crystal_db_path,
-            eval_settings=eval_settings,
-            max_eval_runs=args.max_eval_runs,
-            dry_run=dry_run,
-        )
-        return
-
     if not cif_path.exists():
         raise FileNotFoundError(f"Missing CIF: {cif_path}")
     if not crystal_db_path.exists():
@@ -1066,13 +684,29 @@ def main() -> None:
     if dry_run:
         mode_tag = f"{mode_tag}_dry"
 
-    sweep_name = f"{structure}_master_eval_{mode_tag}_{datetime.now().strftime('%y%m%d_%H%M%S')}"
+    if args.resume:
+        resume_sweep_dir = cfg.get("resume_sweep_dir")
+        if not resume_sweep_dir:
+            raise ValueError("--resume requires 'resume_sweep_dir' in the YAML config.")
 
-    sweep_root, run_config_paths, concrete_configs = prepare_sweep(
-        base_config=base_config,
-        sweep_grid=sweep_grid,
-        sweep_name=sweep_name,
-    )
+        sweep_root = resolve_resume_sweep_dir(resume_sweep_dir)
+        sweep_name = sweep_root.name
+
+        run_config_paths = sorted(sweep_root.glob("*/run_config.json"))
+
+        if not run_config_paths:
+            raise FileNotFoundError(f"No run_config.json files found under: {sweep_root}")
+
+        concrete_configs = [load_json(p) for p in run_config_paths]
+
+    else:
+        sweep_name = f"{structure}_master_eval_{mode_tag}_{datetime.now().strftime('%y%m%d_%H%M%S')}"
+
+        sweep_root, run_config_paths, concrete_configs = prepare_sweep(
+            base_config=base_config,
+            sweep_grid=sweep_grid,
+            sweep_name=sweep_name,
+        )
 
     if effective_max_runs is not None:
         run_config_paths = run_config_paths[:effective_max_runs]
@@ -1129,6 +763,79 @@ def main() -> None:
 
     n_total_runs = len(run_config_paths)
     n_completed = 0
+
+    if args.resume:
+        print(f"Resume mode: {sweep_root}")
+        print(f"Run configs found: {len(run_config_paths)}")
+
+        for run_config_path in run_config_paths:
+            run_dir = run_config_path.parent
+            run_cfg = load_json(run_config_path)
+            run_name = run_cfg.get("run_name", run_dir.name)
+
+            if is_eval_complete(run_dir, structure):
+                print(f"[SKIP] Already evaluated: {run_name}")
+                continue
+
+            models_dir = run_dir / "models"
+            has_model = models_dir.exists() and any(models_dir.glob("*.model"))
+
+            if not has_model:
+                print(f"[TODO] Training not complete, handing back to training: {run_name}")
+                continue
+
+            train_result = {
+                "run_name": run_name,
+                "status": "ok",
+                "result_dir": str(run_dir),
+                "run_config_path": str(run_config_path),
+                "trained_model_path": str(sorted(models_dir.glob("*.model"))[-1]),
+                "deploy_model_path": None,
+                "error": None,
+            }
+
+            try:
+                print(f"Starting resumed evaluation for: {run_name}")
+
+                eval_result = run_single_model_eval(
+                    evaluate_model_func=evaluate_model,
+                    train_result=train_result,
+                    structure=structure,
+                    cif_path=cif_path,
+                    crystal_db_path=crystal_db_path,
+                    eval_settings=eval_settings,
+                    dataset_split=results_group_dir,
+                    sweep_id=sweep_root.name,
+                    use_deploy_model_if_available=USE_DEPLOY_MODEL_IF_AVAILABLE,
+                )
+
+                eval_record = make_compact_eval_record(run_name, train_result, eval_result)
+                master_summary["evaluation_results"].append(eval_record)
+
+                row = build_eval_row(train_result, eval_result, error=None)
+                append_master_csv(row, master_csv_path)
+
+                best_model = choose_best_model(master_summary)
+                master_summary["best_model"] = best_model
+                save_json(master_summary, master_summary_path)
+
+                if best_model is not None:
+                    save_json(best_model, best_model_path)
+
+            except Exception as exc:
+                print(f"Evaluation failed for resumed run: {run_name}")
+                print(repr(exc))
+
+        master_summary["best_model"] = choose_best_model(master_summary)
+        master_summary["finished_at"] = now_iso()
+        save_json(master_summary, master_summary_path)
+
+        if master_summary["best_model"] is not None:
+            save_json(master_summary["best_model"], best_model_path)
+
+        print("\nResume pass finished.")
+        return
+
 
     for train_result in run_sweep_parallel(
         run_config_paths=run_config_paths,
