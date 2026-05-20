@@ -1,0 +1,38 @@
+# configs/master_cfg/smoke.yaml
+
+structure: AlN
+results_group_dir: smoke_tests
+crystal_db_path: data/ref_db.h5
+max_runs: 1
+max_parallel_trainings: 1
+
+eval_settings:
+  device: cuda
+  default_dtype: float64
+  frechet: false
+  fmax: 0.01
+  calculator_mode: '0'
+  compare_crystal_modes: true
+  crystal_hess_path: null
+  crystal_freq_out_path: null
+  crystal_hessian_units: eV/Ang^2
+
+base_config:
+  train_file: train_AlN.xyz
+  valid_file: valid_AlN.xyz
+  chem: AlN
+  atomic_numbers: [7, 13]
+  model_type: MACELES
+  E0s: average
+  max_epochs: 2
+  run_extraction: true
+
+sweep_grid:
+  seed: [1]
+  r_max: [5.0, 6.0, 7.0]
+  energy_weight: [1.0]
+  forces_weight: [100.0]
+  batch_size: [2]
+  valid_batch_size: [2]
+  use_stress: [false]
+  stress_weight: [0.0]

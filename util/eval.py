@@ -453,7 +453,6 @@ def run_single_model_eval(
         default_dtype=eval_settings["default_dtype"],
         frechet=eval_settings["frechet"],
         fmax=eval_settings["fmax"],
-        calculator_mode=eval_settings["calculator_mode"],
         compare_crystal_modes=eval_settings["compare_crystal_modes"],
         crystal_hess_path=eval_settings["crystal_hess_path"],
         crystal_freq_out_path=eval_settings["crystal_freq_out_path"],

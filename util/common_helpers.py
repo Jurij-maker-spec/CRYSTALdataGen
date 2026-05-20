@@ -18,3 +18,5 @@ def require_path(value: str, base: Path = PROJECT_ROOT) -> Path:
     if p is None:
         raise ValueError("Required path is None")
     return p
+
+

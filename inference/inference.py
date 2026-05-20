@@ -126,18 +126,14 @@ def get_primitive_atoms_from_cif(cif_path: Path) -> Atoms:
     return prim_atoms
 
 
-def calculator(model_path: Path, device: str = "cuda", default_dtype: str = "float64", cal: str = "0"):
-    if cal == "0":
-        from mace.calculators import MACECalculator
-
-        calc = MACECalculator(
-            model_paths=str(model_path),
-            default_dtype=default_dtype,
-            device=device,
-        )
-        return calc
-    else:
-        raise ValueError(f"Unknown calculator mode: {cal}")
+def calculator(model_path: Path, device: str = "cuda", default_dtype: str = "float64"):
+    from mace.calculators import MACECalculator
+    calc = MACECalculator(
+        model_paths=str(model_path),
+        default_dtype=default_dtype,
+        device=device,
+    )
+    return calc
 
 
 def geometry_optimisation(atoms: Atoms, frechet: bool = True, fmax: float = 1e-11, trajectory: Path | None = None) -> Atoms:
@@ -703,7 +699,6 @@ def evaluate_model(
     default_dtype: str = "float64",
     frechet: bool = True,
     fmax: float = 1e-11,
-    calculator_mode: str = "0",
     compare_crystal_modes: bool = False,
     crystal_hess_path: str | Path | None = None,
     crystal_freq_out_path: str | Path | None = None,
@@ -760,15 +755,12 @@ def evaluate_model(
     calc = calculator(
         model_path=model_path,
         device=device,
-        default_dtype=default_dtype,
-        cal=calculator_mode,
+        default_dtype=default_dtype
     )
     atoms.calc = calc
 
     initial_forces = atoms.get_forces()
     initial_max_force = float(np.max(np.linalg.norm(initial_forces, axis=1)))
-    # print("\nInitial forces:")
-    # print(initial_forces)
 
     atoms = geometry_optimisation(
         atoms=atoms,
@@ -1012,7 +1004,6 @@ def evaluate_model(
                         "ir_plot": ir_plot_path,
                         "device": device,
                         "default_dtype": default_dtype,
-                        "calculator_mode": calculator_mode,
                         "frechet": frechet,
                         "fmax": fmax,
                         "compare_crystal_modes": compare_crystal_modes,
@@ -1098,7 +1089,6 @@ def parse_args():
     parser.add_argument("--default-dtype", default="float64")
     parser.add_argument("--no-frechet", action="store_true", help="Disable FrechetCellFilter.")
     parser.add_argument("--fmax", type=float, default=1e-11)
-    parser.add_argument("--calculator-mode", default="0", choices=["0", "1"])
     parser.add_argument("--compare-crystal-modes", action="store_true", help="Enable explicit CRYSTAL hessfreq eigenvector/subspace mode matching.")
     parser.add_argument("--crystal-hess-path", default=None, help="Optional explicit CRYSTAL *_freq.hessfreq path for mode matching.")
     parser.add_argument("--crystal-freq-out", default=None, help="Optional explicit CRYSTAL *_freq.out path for degeneracy/frequency metadata.")
@@ -1122,7 +1112,6 @@ def main():
         default_dtype=args.default_dtype,
         frechet=not args.no_frechet,
         fmax=args.fmax,
-        calculator_mode=args.calculator_mode,
         compare_crystal_modes=args.compare_crystal_modes,
         crystal_hess_path=args.crystal_hess_path,
         crystal_freq_out_path=args.crystal_freq_out,

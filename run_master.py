@@ -5,7 +5,6 @@ run_master.py
 Top-level orchestration script for:
 1. preparing a hyperparameter sweep from config
 2. optionally dry-running the sweep setup
-3. optionally running a small smoke test
 4. running training jobs in parallel
 5. starting evaluation immediately when each training job finishes
 6. saving a sweep-wide summary
@@ -14,19 +13,13 @@ Top-level orchestration script for:
 
 from __future__ import annotations
 
-import re
-import csv
-import numpy as np
 import json
-import math
 import sys
-import traceback
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 import argparse
-import yaml
 import os
 
 REQUIRED_ENV = "mace_env_3_12"
@@ -50,30 +43,23 @@ from util.eval import (
     append_master_csv,
     build_eval_row,
     choose_best_model,
-    choose_model_path,
     eval_cif_structure_name,
     is_eval_complete,
     make_compact_eval_record,
     now_iso,
     run_single_model_eval,
 )
-from util.common_helpers import (
-    require_path,
-    resolve_path
-)
+from util.common_helpers import require_path
 
 # ============================================================
 # USER CONFIG
 # ============================================================
-SMOKE_MAX_RUNS = 3
-SMOKE_MAX_PARALLEL_TRAININGS = 1
 USE_DEPLOY_MODEL_IF_AVAILABLE = False
 
 
 # ============================================================
 # HELPERS
 # ============================================================
-
 
 def resolve_resume_sweep_dir(value: str | Path) -> Path:
     p = Path(value)
@@ -90,283 +76,6 @@ def resolve_resume_sweep_dir(value: str | Path) -> Path:
         raise NotADirectoryError(f"Resume path is not a directory: {resolved}")
 
     return resolved
-
-
-def parse_mace_rmse_table_from_train_log(train_log_path: Path) -> dict[str, Any]:
-    """
-    Parse final MACE RMSE table from train.log.
-
-    Expected rows:
-    | train_Default | 1.2 | 4.0 | 0.27 |
-    | valid_Default | 1.4 | 4.4 | 0.30 |
-    """
-    metrics = {
-        "train_rmse_e_mev_atom": None,
-        "train_rmse_f_mev_A": None,
-        "train_relative_f_rmse_percent": None,
-        "valid_rmse_e_mev_atom": None,
-        "valid_rmse_f_mev_A": None,
-        "valid_relative_f_rmse_percent": None,
-    }
-
-    if not train_log_path.exists():
-        return metrics
-
-    text = train_log_path.read_text(encoding="utf-8", errors="replace")
-
-    row_pattern = re.compile(
-        r"\|\s*(train_Default|valid_Default)\s*"
-        r"\|\s*([+-]?\d+(?:\.\d+)?)\s*"
-        r"\|\s*([+-]?\d+(?:\.\d+)?)\s*"
-        r"\|\s*([+-]?\d+(?:\.\d+)?)\s*\|"
-    )
-
-    matches = row_pattern.findall(text)
-
-    # If several tables exist, keep the last occurrence per config_type.
-    for config_type, rmse_e, rmse_f, rel_f in matches:
-        prefix = "train" if config_type == "train_Default" else "valid"
-
-        metrics[f"{prefix}_rmse_e_mev_atom"] = float(rmse_e)
-        metrics[f"{prefix}_rmse_f_mev_A"] = float(rmse_f)
-        metrics[f"{prefix}_relative_f_rmse_percent"] = float(rel_f)
-
-    return metrics
-
-
-def get_train_log_metrics(train_result: dict[str, Any]) -> dict[str, Any]:
-    result_dir = train_result.get("result_dir")
-    if not result_dir:
-        return parse_mace_rmse_table_from_train_log(Path("__missing_train_log__"))
-
-    return parse_mace_rmse_table_from_train_log(Path(result_dir) / "train.log")
-
-
-def now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-
-def append_master_csv(row: dict[str, Any], csv_path: Path) -> None:
-    ensure_dir(csv_path.parent)
-
-    fieldnames = [
-        "run_name",
-        "train_status",
-        "eval_status",
-        "model_path",
-        "result_dir",
-        "seed",
-        "r_max",
-        "batch_size",
-        "valid_batch_size",
-        "energy_weight",
-        "forces_weight",
-        "use_stress",
-        "stress_weight",
-        "max_epochs",
-        "train_rmse_e_mev_atom",
-        "train_rmse_f_mev_A",
-        "train_relative_f_rmse_percent",
-        "valid_rmse_e_mev_atom",
-        "valid_rmse_f_mev_A",
-        "valid_relative_f_rmse_percent",
-        "n_imag_modes",
-        "n_ir_active_modes",
-        "zpe_eV",
-        "spectrum_rel_l2",
-        "freq_mae_ir_cm1",
-        "freq_rmse_ir_cm1",
-        "freq_mae_ir_weighted_cm1",
-        "intensity_pearson_r",
-        "intensity_spearman_r",
-        "matched_mode_count",
-        "composite_score",
-        "summary_json",
-        "ir_plot",
-        "error",
-    ]
-
-    file_exists = csv_path.exists()
-    with open(csv_path, "a", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow({k: row.get(k, "") for k in fieldnames})
-
-
-def load_run_config_from_result(train_result: dict[str, Any]) -> dict[str, Any] | None:
-    run_config_path = train_result.get("run_config_path")
-    if not run_config_path:
-        return None
-
-    path = Path(run_config_path)
-    if not path.exists():
-        return None
-
-    return load_json(path)
-
-
-def choose_model_path(train_result: dict[str, Any]) -> Path:
-    deploy_model_path = train_result.get("deploy_model_path")
-    trained_model_path = train_result.get("trained_model_path")
-
-    if USE_DEPLOY_MODEL_IF_AVAILABLE and deploy_model_path:
-        p = Path(deploy_model_path)
-        if p.exists():
-            return p
-
-    if trained_model_path:
-        p = Path(trained_model_path)
-        if p.exists():
-            return p
-
-    if deploy_model_path:
-        p = Path(deploy_model_path)
-        if p.exists():
-            return p
-
-    raise FileNotFoundError("No usable model path found in train_result.")
-
-
-def extract_run_hparams(run_cfg: dict[str, Any] | None) -> dict[str, Any]:
-    if run_cfg is None:
-        return {
-            "seed": None,
-            "r_max": None,
-            "batch_size": None,
-            "valid_batch_size": None,
-            "energy_weight": None,
-            "forces_weight": None,
-            "use_stress": None,
-            "stress_weight": None,
-            "max_epochs": None,
-        }
-
-    return {
-        "seed": run_cfg.get("seed"),
-        "r_max": run_cfg.get("r_max"),
-        "batch_size": run_cfg.get("batch_size"),
-        "valid_batch_size": run_cfg.get("valid_batch_size"),
-        "energy_weight": run_cfg.get("energy_weight"),
-        "forces_weight": run_cfg.get("forces_weight"),
-        "use_stress": run_cfg.get("use_stress"),
-        "stress_weight": run_cfg.get("stress_weight"),
-        "max_epochs": run_cfg.get("max_epochs"),
-    }
-
-
-def safe_get_ranking_metrics(eval_result: dict[str, Any] | None) -> dict[str, Any]:
-    if eval_result is None:
-        return {
-            "freq_mae_ir_cm1": None,
-            "freq_rmse_ir_cm1": None,
-            "freq_mae_ir_weighted_cm1": None,
-            "intensity_pearson_r": None,
-            "intensity_spearman_r": None,
-            "matched_mode_count": None,
-            "composite_score": None,
-        }
-
-    rm = eval_result.get("ranking_metrics", {})
-    return {
-        "freq_mae_ir_cm1": rm.get("freq_mae_ir_cm1"),
-        "freq_rmse_ir_cm1": rm.get("freq_rmse_ir_cm1"),
-        "freq_mae_ir_weighted_cm1": rm.get("freq_mae_ir_weighted_cm1"),
-        "intensity_pearson_r": rm.get("intensity_pearson_r"),
-        "intensity_spearman_r": rm.get("intensity_spearman_r"),
-        "matched_mode_count": rm.get("matched_mode_count"),
-        "composite_score": rm.get("composite_score"),
-    }
-
-
-def build_eval_row(
-    train_result: dict[str, Any],
-    eval_result: dict[str, Any] | None,
-    error: str | None = None,
-) -> dict[str, Any]:
-    run_cfg = load_run_config_from_result(train_result)
-    hp = extract_run_hparams(run_cfg)
-    rm = safe_get_ranking_metrics(eval_result)
-    train_log_metrics = get_train_log_metrics(train_result)
-
-    row = {
-        "run_name": train_result.get("run_name"),
-        "train_status": train_result.get("status"),
-        "eval_status": "not_run" if eval_result is None and error is None else ("failed" if error else "ok"),
-        "model_path": None,
-        "result_dir": train_result.get("result_dir"),
-        "seed": hp["seed"],
-        "r_max": hp["r_max"],
-        "batch_size": hp["batch_size"],
-        "valid_batch_size": hp["valid_batch_size"],
-        "energy_weight": hp["energy_weight"],
-        "forces_weight": hp["forces_weight"],
-        "use_stress": hp["use_stress"],
-        "stress_weight": hp["stress_weight"],
-        "max_epochs": hp["max_epochs"],
-        "train_rmse_e_mev_atom": train_log_metrics["train_rmse_e_mev_atom"],
-        "train_rmse_f_mev_A": train_log_metrics["train_rmse_f_mev_A"],
-        "train_relative_f_rmse_percent": train_log_metrics["train_relative_f_rmse_percent"],
-        "valid_rmse_e_mev_atom": train_log_metrics["valid_rmse_e_mev_atom"],
-        "valid_rmse_f_mev_A": train_log_metrics["valid_rmse_f_mev_A"],
-        "valid_relative_f_rmse_percent": train_log_metrics["valid_relative_f_rmse_percent"],
-        "n_imag_modes": None,
-        "n_ir_active_modes": None,
-        "zpe_eV": None,
-        "spectrum_rel_l2": None,
-        "freq_mae_ir_cm1": rm["freq_mae_ir_cm1"],
-        "freq_rmse_ir_cm1": rm["freq_rmse_ir_cm1"],
-        "freq_mae_ir_weighted_cm1": rm["freq_mae_ir_weighted_cm1"],
-        "intensity_pearson_r": rm["intensity_pearson_r"],
-        "intensity_spearman_r": rm["intensity_spearman_r"],
-        "matched_mode_count": rm["matched_mode_count"],
-        "composite_score": rm["composite_score"],
-        "summary_json": None,
-        "ir_plot": None,
-        "error": error,
-    }
-
-    if train_result.get("status") == "ok":
-        try:
-            row["model_path"] = str(choose_model_path(train_result))
-        except Exception as exc:
-            row["error"] = repr(exc)
-
-    if eval_result is not None:
-        row["n_imag_modes"] = eval_result.get("n_imag_modes")
-        row["n_ir_active_modes"] = eval_result.get("n_ir_active_modes")
-        row["zpe_eV"] = eval_result.get("zpe_eV")
-
-        crystal_cmp = eval_result.get("crystal_comparison", {})
-        row["spectrum_rel_l2"] = crystal_cmp.get("spectrum_rel_l2")
-
-        artifacts = eval_result.get("artifacts", {})
-        row["summary_json"] = artifacts.get("summary_json")
-        row["ir_plot"] = artifacts.get("ir_plot")
-
-    return row
-
-
-def apply_smoke_overrides(
-    base_config: dict[str, Any],
-    sweep_grid: dict[str, list[Any]],
-) -> tuple[dict[str, Any], dict[str, list[Any]], int, int | None]:
-    base = deepcopy(base_config)
-    grid = deepcopy(sweep_grid)
-
-    base["max_epochs"] = 2
-    base["run_extraction"] = True
-
-    grid["seed"] = [1]
-    grid["r_max"] = [5.0, 6.0, 7.0]
-    grid["energy_weight"] = [1.0]
-    grid["forces_weight"] = [100.0]
-    grid["batch_size"] = [2]
-    grid["valid_batch_size"] = [2]
-    grid["use_stress"] = [False]
-    grid["stress_weight"] = [2.0]
-
-    return base, grid, SMOKE_MAX_PARALLEL_TRAININGS, SMOKE_MAX_RUNS
 
 
 def preview_run_commands(run_config_paths: list[Path]) -> list[dict[str, Any]]:
@@ -439,112 +148,28 @@ def preview_run_commands(run_config_paths: list[Path]) -> list[dict[str, Any]]:
     return previews
 
 
-def is_finite_number(x: Any) -> bool:
-    return isinstance(x, (int, float)) and math.isfinite(x)
+def resolve_results_group_root(group_dir: str | None) -> Path:
+    results_root = PROJECT_ROOT / "results"
+
+    if group_dir is None or str(group_dir).strip() == "":
+        return results_root
+
+    return results_root / group_dir
 
 
-def build_best_model_record(eval_record: dict[str, Any]) -> dict[str, Any]:
-    train_result = eval_record["train_result"]
-    eval_result = eval_record["eval_result"]
-    row = build_eval_row(train_result, eval_result, error=None)
+def resolve_config_path(config: Path) -> Path:
+    if config.is_absolute():
+        return config
 
-    return {
-        "run_name": eval_record.get("run_name"),
-        "evaluated_at": eval_record.get("evaluated_at"),
-        "model_path": row.get("model_path"),
-        "result_dir": row.get("result_dir"),
-        "summary_json": row.get("summary_json"),
-        "ir_plot": row.get("ir_plot"),
-        "metrics": {
-            "n_imag_modes": row.get("n_imag_modes"),
-            "n_ir_active_modes": row.get("n_ir_active_modes"),
-            "zpe_eV": row.get("zpe_eV"),
-            "spectrum_rel_l2": row.get("spectrum_rel_l2"),
-            "freq_mae_ir_cm1": row.get("freq_mae_ir_cm1"),
-            "freq_rmse_ir_cm1": row.get("freq_rmse_ir_cm1"),
-            "freq_mae_ir_weighted_cm1": row.get("freq_mae_ir_weighted_cm1"),
-            "intensity_pearson_r": row.get("intensity_pearson_r"),
-            "intensity_spearman_r": row.get("intensity_spearman_r"),
-            "matched_mode_count": row.get("matched_mode_count"),
-            "composite_score": row.get("composite_score"),
-        },
-    }
+    direct = PROJECT_ROOT / config
+    if direct.exists():
+        return direct
 
+    nested = PROJECT_ROOT / "configs" / "master_cfg" / config
+    if nested.exists():
+        return nested
 
-def evaluation_sort_key(eval_record: dict[str, Any]) -> tuple:
-    """
-    Lower is better.
-
-    Primary:
-      - composite_score if available
-
-    Fallbacks:
-      - freq_mae_ir_cm1
-      - spectrum_rel_l2
-      - n_imag_modes
-
-    Imaginary modes are a penalty, not a rejection.
-    """
-    eval_result = eval_record["eval_result"]
-    row = build_eval_row(eval_record["train_result"], eval_result, error=None)
-
-    composite_score = row.get("composite_score")
-    freq_mae = row.get("freq_mae_ir_cm1")
-    spectrum_l2 = row.get("spectrum_rel_l2")
-    n_imag = row.get("n_imag_modes")
-    matched_mode_count = row.get("matched_mode_count")
-
-    has_composite = 0 if is_finite_number(composite_score) else 1
-    composite_val = float(composite_score) if is_finite_number(composite_score) else float("inf")
-
-    has_freq_mae = 0 if is_finite_number(freq_mae) else 1
-    freq_mae_val = float(freq_mae) if is_finite_number(freq_mae) else float("inf")
-
-    has_spectrum = 0 if is_finite_number(spectrum_l2) else 1
-    spectrum_val = float(spectrum_l2) if is_finite_number(spectrum_l2) else float("inf")
-
-    imag_val = int(n_imag) if isinstance(n_imag, int) else 10**9
-    matched_val = -int(matched_mode_count) if isinstance(matched_mode_count, int) else 10**9
-
-    return (
-        has_composite,
-        composite_val,
-        has_freq_mae,
-        freq_mae_val,
-        has_spectrum,
-        spectrum_val,
-        imag_val,
-        matched_val,
-        row.get("run_name", ""),
-    )
-
-
-def choose_best_model(master_summary: dict[str, Any]) -> dict[str, Any] | None:
-    ok_records = [
-        rec for rec in master_summary.get("evaluation_results", [])
-        if rec.get("status") == "ok" and "eval_result" in rec
-    ]
-
-    if not ok_records:
-        return None
-
-    best = min(ok_records, key=evaluation_sort_key)
-    return build_best_model_record(best)
-
-
-def eval_cif_structure_name(structure: str) -> str:
-    """
-    Evaluation CIFs use the original structure name, not functional suffixes.
-
-    Example:
-        SiO2_PBE -> SiO2
-        AlN_PBE  -> AlN
-    """
-    for suffix in ("_PBE", "_PBESOLXC", "_PBESOL", "_HSESOL", "_HSE"):
-        if structure.upper().endswith(suffix):
-            return structure[: -len(suffix)]
-    return structure
-
+    raise FileNotFoundError(f"Could not find config file: {config}")
 
 # ============================================================
 # MAIN
@@ -552,14 +177,14 @@ def eval_cif_structure_name(structure: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train/evaluate a MACELES sweep or rerun evaluation for an existing sweep."
+        description="Train/evaluate a MACELES hyperparameter sweep."
     )
 
     parser.add_argument(
         "--config",
         type=Path,
         required=True,
-        help="YAML config file for this master evaluation run.",
+        help="YAML config file. Relative paths are resolved under configs/master_cfg.",
     )
 
     parser.add_argument(
@@ -571,41 +196,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="With --eval-only, only print discovered run dirs, configs, and model paths. No evaluation is run.",
+        help="Preview generated run configs and commands without training/evaluation.",
     )
 
     return parser.parse_args()
 
 
-def resolve_results_group_root(group_dir: str | None) -> Path:
-    results_root = PROJECT_ROOT / "results"
-
-    if group_dir is None or str(group_dir).strip() == "":
-        return results_root
-
-    return results_root / group_dir
-
-
-def resolve_existing_sweep_dir(sweep_dir: Path) -> Path:
-    sweep_dir = Path(sweep_dir)
-
-    if sweep_dir.is_absolute():
-        resolved = sweep_dir
-    else:
-        resolved = PROJECT_ROOT / "results" / sweep_dir
-
-    if not resolved.exists():
-        raise FileNotFoundError(f"Missing sweep directory: {resolved}")
-
-    if not resolved.is_dir():
-        raise NotADirectoryError(f"Sweep path is not a directory: {resolved}")
-
-    return resolved
-
-
 def main() -> None:
     args = parse_args()
-    config_root = PROJECT_ROOT / 'configs/master_cfg' / str(args.config)
+
+    config_root = resolve_config_path(args.config)
     cfg = load_yaml(config_root)
 
     # ============================================================
@@ -613,11 +213,10 @@ def main() -> None:
     # ============================================================
     current_env = os.environ.get("CONDA_DEFAULT_ENV")
     if current_env != REQUIRED_ENV:
-        sys.stderr.write(
-            f"Error: This script must be run in conda env '{REQUIRED_ENV}', "
-            f"but current env is '{current_env}'.\n"
+        raise RuntimeError(
+            f"This script must be run in conda env '{REQUIRED_ENV}', "
+            f"but current env is '{current_env}'."
         )
-        sys.exit(1)
 
     if os.environ.get("CONDA_DEFAULT_ENV") != REQUIRED_ENV:
         os.execvp(
@@ -644,7 +243,6 @@ def main() -> None:
         base=PROJECT_ROOT,
     )
     dry_run = args.dry_run or cfg.get("dry_run", False)
-    smoke_test = cfg.get("smoke_test", False)
     max_runs = cfg.get("max_runs")
     max_parallel_trainings = cfg.get("max_parallel_trainings", 1)
     eval_settings = cfg["eval_settings"]
@@ -674,12 +272,6 @@ def main() -> None:
     effective_max_runs = max_runs
 
     mode_tag = "full"
-
-    if smoke_test:
-        base_config, sweep_grid, max_parallel, smoke_limit = apply_smoke_overrides(base_config, sweep_grid)
-        if effective_max_runs is None:
-            effective_max_runs = smoke_limit
-        mode_tag = "smoke"
 
     if dry_run:
         mode_tag = f"{mode_tag}_dry"
@@ -716,27 +308,31 @@ def main() -> None:
     master_csv_path = sweep_root / "master_summary.csv"
     best_model_path = sweep_root / "best_model.json"
 
-    master_summary: dict[str, Any] = {
-        "sweep_name": sweep_name,
-        "created_at": now_iso(),
-        "project_root": str(PROJECT_ROOT),
-        "structure": structure,
-        "cif_path": str(cif_path),
-        "crystal_db_path": str(crystal_db_path),
-        "dry_run": dry_run,
-        "smoke_test": smoke_test,
-        "max_parallel_trainings": max_parallel,
-        "max_runs": effective_max_runs,
-        "use_deploy_model_if_available": USE_DEPLOY_MODEL_IF_AVAILABLE,
-        "eval_settings": deepcopy(eval_settings),
-        "base_config": deepcopy(base_config),
-        "sweep_grid": deepcopy(sweep_grid),
-        "n_runs_total_prepared": len(concrete_configs),
-        "n_runs_total_selected": len(run_config_paths),
-        "training_results": [],
-        "evaluation_results": [],
-        "best_model": None,
-    }
+    if args.resume and master_summary_path.exists():
+        master_summary = load_json(master_summary_path)
+        master_summary.setdefault("training_results", [])
+        master_summary.setdefault("evaluation_results", [])
+    else:
+        master_summary: dict[str, Any] = {
+            "sweep_name": sweep_name,
+            "created_at": now_iso(),
+            "project_root": str(PROJECT_ROOT),
+            "structure": structure,
+            "cif_path": str(cif_path),
+            "crystal_db_path": str(crystal_db_path),
+            "dry_run": dry_run,
+            "max_parallel_trainings": max_parallel,
+            "max_runs": effective_max_runs,
+            "use_deploy_model_if_available": USE_DEPLOY_MODEL_IF_AVAILABLE,
+            "eval_settings": deepcopy(eval_settings),
+            "base_config": deepcopy(base_config),
+            "sweep_grid": deepcopy(sweep_grid),
+            "n_runs_total_prepared": len(concrete_configs),
+            "n_runs_total_selected": len(run_config_paths),
+            "training_results": [],
+            "evaluation_results": [],
+            "best_model": None,
+        }
 
     command_previews = preview_run_commands(run_config_paths)
     master_summary["command_previews"] = command_previews
@@ -746,7 +342,7 @@ def main() -> None:
     print(f"Sweep root: {sweep_root}")
     print(f"Prepared runs: {len(concrete_configs)}")
     print(f"Selected runs: {len(run_config_paths)}")
-    print(f"Mode: {'dry' if dry_run else ('smoke' if smoke_test else 'full')}")
+    print(f"Mode: {'dry' if dry_run else 'full'}")
 
     if dry_run:
         print("\nDry run only. No training or evaluation will be executed.\n")
@@ -823,7 +419,19 @@ def main() -> None:
                     save_json(best_model, best_model_path)
 
             except Exception as exc:
-                print(f"Evaluation failed for resumed run: {run_name}")
+                eval_record = {
+                    "run_name": run_name,
+                    "status": "failed",
+                    "evaluated_at": now_iso(),
+                    "train_result": train_result,
+                    "error": repr(exc),
+                }
+                master_summary["evaluation_results"].append(eval_record)
+
+                row = build_eval_row(train_result=train_result, eval_result=None, error=repr(exc))
+                append_master_csv(row, master_csv_path)
+                save_json(master_summary, master_summary_path)
+                print(f"Evaluation failed for resumed run: {run_name}")                
                 print(repr(exc))
 
         master_summary["best_model"] = choose_best_model(master_summary)
@@ -879,48 +487,19 @@ def main() -> None:
             print(f"Starting evaluation for: {run_name}")
             print(f"Using model: {model_path}")
 
-            eval_result = evaluate_model(
-                model_path=model_path,
+            eval_result = run_single_model_eval(
+                evaluate_model_func=evaluate_model,
+                train_result=train_result,
                 structure=structure,
                 cif_path=cif_path,
-                output_dir=result_dir,
                 crystal_db_path=crystal_db_path,
-                device=eval_settings["device"],
-                default_dtype=eval_settings["default_dtype"],
-                frechet=eval_settings["frechet"],
-                fmax=eval_settings["fmax"],
-                calculator_mode=eval_settings["calculator_mode"],
-                compare_crystal_modes=eval_settings["compare_crystal_modes"],
-                crystal_hess_path=eval_settings["crystal_hess_path"],
-                crystal_freq_out_path=eval_settings["crystal_freq_out_path"],
-                crystal_hessian_units=eval_settings["crystal_hessian_units"],
-                # reserved plugin interface
-                run_phonopy=eval_settings.get("run_phonopy", False),
-                phonopy_plugin=eval_settings.get("phonopy_plugin"),
-                write_ref_db=eval_settings.get("write_ref_db", False),
-                ref_db_path=eval_settings.get("ref_db_path"),
-                run_id=run_name,
+                eval_settings=eval_settings,
                 dataset_split=results_group_dir,
                 sweep_id=sweep_root.name,
+                use_deploy_model_if_available=USE_DEPLOY_MODEL_IF_AVAILABLE,
             )
 
-            eval_record = {
-                "run_name": run_name,
-                "status": "ok",
-                "evaluated_at": now_iso(),
-                "train_result": train_result,
-                "eval_result": {
-                    "n_imag_modes": eval_result.get("n_imag_modes"),
-                    "n_ir_active_modes": eval_result.get("n_ir_active_modes"),
-                    "zpe_eV": eval_result.get("zpe_eV"),
-                    "crystal_comparison": {
-                        "spectrum_rel_l2": eval_result.get("crystal_comparison", {}).get("spectrum_rel_l2"),
-                    },
-                    "ranking_metrics": eval_result.get("ranking_metrics", {}),
-                    "artifacts": eval_result.get("artifacts", {}),
-                "ref_db": eval_result.get("ref_db", {}),
-                },
-            }
+            eval_record = make_compact_eval_record(run_name, train_result, eval_result)
             master_summary["evaluation_results"].append(eval_record)
 
             row = build_eval_row(train_result=train_result, eval_result=eval_result, error=None)
@@ -990,20 +569,5 @@ def main() -> None:
 if __name__ == "__main__":
     '''
     python run_master.py --config configs/master_cfg/AlN_10_90.yaml
-
-    Eval-only:
-    python run_master.py \
-    --config configs/AlN_10_90.yaml \
-    --eval-only \
-    --sweep-dir AlN_10_90/AlN_master_eval_full_260504_120000
-
-    
-    Eval-only dry run:
-    python run_master.py \
-    --config configs/AlN_10_90.yaml \
-    --eval-only \
-    --sweep-dir AlN_10_90/AlN_master_eval_full_260504_120000 \
-    --max-eval-runs 3 \
-    --dry-run
     '''
     main()
