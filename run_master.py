@@ -14,6 +14,7 @@ Top-level orchestration script for:
 from __future__ import annotations
 
 import json
+import traceback
 import sys
 from copy import deepcopy
 from datetime import datetime
@@ -43,6 +44,7 @@ from util.eval import (
     append_master_csv,
     build_eval_row,
     choose_best_model,
+    choose_model_path,
     eval_cif_structure_name,
     is_eval_complete,
     make_compact_eval_record,
@@ -60,6 +62,120 @@ USE_DEPLOY_MODEL_IF_AVAILABLE = False
 # ============================================================
 # HELPERS
 # ============================================================
+
+def checkpoint_exists(run_dir: Path) -> bool:
+    checkpoint_dir = run_dir / "checkpoints"
+    if not checkpoint_dir.exists():
+        return False
+
+    patterns = ["*.pt", "*.pth", "*.model", "*.ckpt"]
+    return any(checkpoint_dir.glob(pattern) for pattern in patterns)
+
+
+def finished_model_exists(run_dir: Path) -> bool:
+    models_dir = run_dir / "models"
+    return models_dir.exists() and any(models_dir.glob("*.model"))
+
+
+def latest_model_path(run_dir: Path) -> Path:
+    models = sorted((run_dir / "models").glob("*.model"))
+    if not models:
+        raise FileNotFoundError(f"No finished .model found in {run_dir}")
+    return models[-1]
+
+
+def enable_restart_latest(run_config_path: Path) -> None:
+    run_cfg = load_json(run_config_path)
+    run_cfg["restart_latest"] = True
+    save_json(run_cfg, run_config_path)
+
+
+def train_result_from_finished_run(run_config_path: Path) -> dict[str, Any]:
+    run_dir = run_config_path.parent
+    run_cfg = load_json(run_config_path)
+    run_name = run_cfg.get("run_name", run_dir.name)
+
+    return {
+        "run_name": run_name,
+        "status": "ok",
+        "result_dir": str(run_dir),
+        "run_config_path": str(run_config_path),
+        "trained_model_path": str(latest_model_path(run_dir)),
+        "deploy_model_path": None,
+        "error": None,
+    }
+
+
+def evaluate_train_result_and_update_summary(
+    *,
+    train_result: dict[str, Any],
+    structure: str,
+    cif_path: Path,
+    crystal_db_path: Path,
+    eval_settings: dict[str, Any],
+    results_group_dir: str,
+    sweep_root: Path,
+    master_summary: dict[str, Any],
+    master_summary_path: Path,
+    master_csv_path: Path,
+    best_model_path: Path,
+) -> None:
+    run_name = train_result.get("run_name", "<unknown>")
+
+    try:
+        print(f"Starting evaluation for: {run_name}")
+
+        eval_result = run_single_model_eval(
+            evaluate_model_func=evaluate_model,
+            train_result=train_result,
+            structure=structure,
+            cif_path=cif_path,
+            crystal_db_path=crystal_db_path,
+            eval_settings=eval_settings,
+            dataset_split=results_group_dir,
+            sweep_id=sweep_root.name,
+            use_deploy_model_if_available=USE_DEPLOY_MODEL_IF_AVAILABLE,
+        )
+
+        eval_record = make_compact_eval_record(run_name, train_result, eval_result)
+        master_summary["evaluation_results"].append(eval_record)
+
+        row = build_eval_row(train_result=train_result, eval_result=eval_result, error=None)
+        append_master_csv(row, master_csv_path)
+
+        best_model = choose_best_model(master_summary)
+        master_summary["best_model"] = best_model
+        save_json(master_summary, master_summary_path)
+
+        if best_model is not None:
+            save_json(best_model, best_model_path)
+
+        print(f"Evaluation finished for: {run_name}")
+
+    except Exception as exc:
+        eval_record = {
+            "run_name": run_name,
+            "status": "failed",
+            "evaluated_at": now_iso(),
+            "train_result": train_result,
+            "error": repr(exc),
+            "traceback": traceback.format_exc(),
+        }
+        master_summary["evaluation_results"].append(eval_record)
+
+        row = build_eval_row(train_result=train_result, eval_result=None, error=repr(exc))
+        append_master_csv(row, master_csv_path)
+
+        best_model = choose_best_model(master_summary)
+        master_summary["best_model"] = best_model
+        save_json(master_summary, master_summary_path)
+
+        if best_model is not None:
+            save_json(best_model, best_model_path)
+
+        print(f"Evaluation failed for: {run_name}")
+        print(repr(exc))
+
 
 def resolve_resume_sweep_dir(value: str | Path) -> Path:
     p = Path(value)
@@ -365,75 +481,120 @@ def main() -> None:
         print(f"Resume mode: {sweep_root}")
         print(f"Run configs found: {len(run_config_paths)}")
 
+        already_done: list[Path] = []
+        eval_pending: list[Path] = []
+        train_pending: list[Path] = []
+        fresh_train_pending: list[Path] = []
+
         for run_config_path in run_config_paths:
             run_dir = run_config_path.parent
             run_cfg = load_json(run_config_path)
             run_name = run_cfg.get("run_name", run_dir.name)
 
             if is_eval_complete(run_dir, structure):
+                already_done.append(run_config_path)
                 print(f"[SKIP] Already evaluated: {run_name}")
                 continue
 
-            models_dir = run_dir / "models"
-            has_model = models_dir.exists() and any(models_dir.glob("*.model"))
-
-            if not has_model:
-                print(f"[TODO] Training not complete, handing back to training: {run_name}")
+            if finished_model_exists(run_dir):
+                eval_pending.append(run_config_path)
+                print(f"[EVAL] Finished model found, evaluation missing: {run_name}")
                 continue
 
-            train_result = {
-                "run_name": run_name,
-                "status": "ok",
-                "result_dir": str(run_dir),
-                "run_config_path": str(run_config_path),
-                "trained_model_path": str(sorted(models_dir.glob("*.model"))[-1]),
-                "deploy_model_path": None,
-                "error": None,
-            }
+            if checkpoint_exists(run_dir):
+                enable_restart_latest(run_config_path)
+                train_pending.append(run_config_path)
+                print(f"[TRAIN-RESUME] Checkpoint found: {run_name}")
+                continue
 
-            try:
-                print(f"Starting resumed evaluation for: {run_name}")
+            # No model and no checkpoint means the run was prepared but never started.
+            # Start it normally.
+            run_cfg["restart_latest"] = False
+            save_json(run_cfg, run_config_path)
 
-                eval_result = run_single_model_eval(
-                    evaluate_model_func=evaluate_model,
+            train_pending.append(run_config_path)
+            print(f"[TRAIN-START] No checkpoint found, starting fresh: {run_name}")
+
+            fresh_train_pending.append(run_config_path)
+            print(f"[SKIP] No model and no checkpoint: {run_name}")
+
+        master_summary["resume_summary"] = {
+            "resumed_at": now_iso(),
+            "already_done": len(already_done),
+            "eval_pending": len(eval_pending),
+            "train_pending": len(train_pending),
+            "fresh_train_pending": len(fresh_train_pending),
+        }
+        save_json(master_summary, master_summary_path)
+
+        print("\nResume classification:")
+        print(f"  already evaluated      : {len(already_done)}")
+        print(f"  eval pending           : {len(eval_pending)}")
+        print(f"  train pending          : {len(train_pending)}")
+        print(f"  fresh train pending    : {len(fresh_train_pending)}")
+
+        # 1. First evaluate models that already finished training.
+        for run_config_path in eval_pending:
+            train_result = train_result_from_finished_run(run_config_path)
+            master_summary["training_results"].append(train_result)
+            save_json(master_summary, master_summary_path)
+
+            evaluate_train_result_and_update_summary(
+                train_result=train_result,
+                structure=structure,
+                cif_path=cif_path,
+                crystal_db_path=crystal_db_path,
+                eval_settings=eval_settings,
+                results_group_dir=results_group_dir,
+                sweep_root=sweep_root,
+                master_summary=master_summary,
+                master_summary_path=master_summary_path,
+                master_csv_path=master_csv_path,
+                best_model_path=best_model_path,
+            )
+
+        # 2. Then restart interrupted trainings from latest checkpoint.
+        if train_pending:
+            print("\nRestarting interrupted trainings from checkpoints...")
+
+            for train_result in run_sweep_parallel(
+                run_config_paths=train_pending,
+                max_parallel=max_parallel,
+            ):
+                master_summary["training_results"].append(train_result)
+                save_json(master_summary, master_summary_path)
+
+                run_name = train_result.get("run_name", "<unknown>")
+                print(f"Resumed training finished: {run_name} | status={train_result.get('status')}")
+
+                if train_result.get("status") != "ok":
+                    row = build_eval_row(
+                        train_result=train_result,
+                        eval_result=None,
+                        error=train_result.get("error"),
+                    )
+                    master_summary["evaluation_results"].append({
+                        "run_name": run_name,
+                        "status": "skipped_due_to_training_failure",
+                        "train_result": train_result,
+                    })
+                    append_master_csv(row, master_csv_path)
+                    save_json(master_summary, master_summary_path)
+                    continue
+
+                evaluate_train_result_and_update_summary(
                     train_result=train_result,
                     structure=structure,
                     cif_path=cif_path,
                     crystal_db_path=crystal_db_path,
                     eval_settings=eval_settings,
-                    dataset_split=results_group_dir,
-                    sweep_id=sweep_root.name,
-                    use_deploy_model_if_available=USE_DEPLOY_MODEL_IF_AVAILABLE,
+                    results_group_dir=results_group_dir,
+                    sweep_root=sweep_root,
+                    master_summary=master_summary,
+                    master_summary_path=master_summary_path,
+                    master_csv_path=master_csv_path,
+                    best_model_path=best_model_path,
                 )
-
-                eval_record = make_compact_eval_record(run_name, train_result, eval_result)
-                master_summary["evaluation_results"].append(eval_record)
-
-                row = build_eval_row(train_result, eval_result, error=None)
-                append_master_csv(row, master_csv_path)
-
-                best_model = choose_best_model(master_summary)
-                master_summary["best_model"] = best_model
-                save_json(master_summary, master_summary_path)
-
-                if best_model is not None:
-                    save_json(best_model, best_model_path)
-
-            except Exception as exc:
-                eval_record = {
-                    "run_name": run_name,
-                    "status": "failed",
-                    "evaluated_at": now_iso(),
-                    "train_result": train_result,
-                    "error": repr(exc),
-                }
-                master_summary["evaluation_results"].append(eval_record)
-
-                row = build_eval_row(train_result=train_result, eval_result=None, error=repr(exc))
-                append_master_csv(row, master_csv_path)
-                save_json(master_summary, master_summary_path)
-                print(f"Evaluation failed for resumed run: {run_name}")                
-                print(repr(exc))
 
         master_summary["best_model"] = choose_best_model(master_summary)
         master_summary["finished_at"] = now_iso()
@@ -443,6 +604,9 @@ def main() -> None:
             save_json(master_summary["best_model"], best_model_path)
 
         print("\nResume pass finished.")
+        print(f"Master summary JSON: {master_summary_path}")
+        print(f"Master summary CSV : {master_csv_path}")
+        print(f"Best model JSON    : {best_model_path}")
         return
 
 
