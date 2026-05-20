@@ -61,7 +61,6 @@ dependencies:
     - lightning-utilities==0.15.2
     - lmdb==1.7.5
     - mace==1.1.2
-    - mace-dipole-core==0.3.5
     - mace-torch==0.3.15
     - markupsafe==2.1.5
     - matplotlib==3.10.7
