@@ -7,6 +7,7 @@ max_runs: null
 max_parallel_trainings: 1
 
 crystal_db_path: data/ref_db.h5
+resume_sweep_dir: results/AlN_10_90/AlN_master_eval_full_260504_120000
 
 eval_settings:
   device: cuda
