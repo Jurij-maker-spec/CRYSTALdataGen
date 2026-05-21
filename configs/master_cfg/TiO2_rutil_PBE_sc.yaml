@@ -1,5 +1,5 @@
 # Split is 10/90
-structure: TiO2_rutil-pbe
+structure: TiO2_rutil_PBE
 results_group_dir: TiO2_rutil_PBE_sc
 
 dry_run: false
