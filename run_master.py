@@ -334,12 +334,6 @@ def main() -> None:
             f"but current env is '{current_env}'."
         )
 
-    if os.environ.get("CONDA_DEFAULT_ENV") != REQUIRED_ENV:
-        os.execvp(
-            "conda",
-            ["conda", "run", "-n", REQUIRED_ENV, "python"] + sys.argv
-        )
-
     # ============================================================
     # Load from YAML
     # ============================================================
@@ -393,6 +387,10 @@ def main() -> None:
     if dry_run:
         mode_tag = f"{mode_tag}_dry"
 
+
+    # ============================================================
+    # Resume block
+    # ============================================================
     if args.resume:
         resume_sweep_dir = cfg.get("resume_sweep_dir")
         if not resume_sweep_dir:
@@ -417,7 +415,7 @@ def main() -> None:
             sweep_name=sweep_name,
         )
 
-    if effective_max_runs is not None:
+    if effective_max_runs is not None and not args.resume:
         run_config_paths = run_config_paths[:effective_max_runs]
         concrete_configs = concrete_configs[:effective_max_runs]
 
@@ -474,9 +472,6 @@ def main() -> None:
         print(f"Master summary JSON: {master_summary_path}")
         return
 
-    n_total_runs = len(run_config_paths)
-    n_completed = 0
-
     if args.resume:
         print(f"Resume mode: {sweep_root}")
         print(f"Run configs found: {len(run_config_paths)}")
@@ -513,10 +508,8 @@ def main() -> None:
             save_json(run_cfg, run_config_path)
 
             train_pending.append(run_config_path)
-            print(f"[TRAIN-START] No checkpoint found, starting fresh: {run_name}")
-
             fresh_train_pending.append(run_config_path)
-            print(f"[SKIP] No model and no checkpoint: {run_name}")
+            print(f"[TRAIN-START] No checkpoint found, starting fresh: {run_name}")
 
         master_summary["resume_summary"] = {
             "resumed_at": now_iso(),
@@ -524,14 +517,16 @@ def main() -> None:
             "eval_pending": len(eval_pending),
             "train_pending": len(train_pending),
             "fresh_train_pending": len(fresh_train_pending),
+            "checkpoint_train_pending": len(train_pending) - len(fresh_train_pending),
         }
         save_json(master_summary, master_summary_path)
 
         print("\nResume classification:")
-        print(f"  already evaluated      : {len(already_done)}")
-        print(f"  eval pending           : {len(eval_pending)}")
-        print(f"  train pending          : {len(train_pending)}")
-        print(f"  fresh train pending    : {len(fresh_train_pending)}")
+        print(f"  already evaluated        : {len(already_done)}")
+        print(f"  eval pending             : {len(eval_pending)}")
+        print(f"  train pending            : {len(train_pending)}")
+        print(f"  fresh train pending      : {len(fresh_train_pending)}")
+        print(f"  checkpoint train pending : {len(train_pending) - len(fresh_train_pending)}")
 
         # 1. First evaluate models that already finished training.
         for run_config_path in eval_pending:
@@ -555,7 +550,7 @@ def main() -> None:
 
         # 2. Then restart interrupted trainings from latest checkpoint.
         if train_pending:
-            print("\nRestarting interrupted trainings from checkpoints...")
+            print("\nStarting/resuming pending trainings...")
 
             for train_result in run_sweep_parallel(
                 run_config_paths=train_pending,
@@ -609,6 +604,11 @@ def main() -> None:
         print(f"Best model JSON    : {best_model_path}")
         return
 
+    # ============================================================
+    # Main block
+    # ============================================================
+    n_total_runs = len(run_config_paths)
+    n_completed = 0
 
     for train_result in run_sweep_parallel(
         run_config_paths=run_config_paths,
@@ -647,8 +647,6 @@ def main() -> None:
 
         try:
             model_path = choose_model_path(train_result)
-            result_dir = Path(train_result["result_dir"])
-
             print(f"Starting evaluation for: {run_name}")
             print(f"Using model: {model_path}")
 

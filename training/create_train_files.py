@@ -66,7 +66,7 @@ def build_config(raw: dict[str, Any]) -> dict[str, Any]:
             project_root,
         ),
         "TRAIN_XYZ": resolve_path(raw.get("train_xyz", "data/train.xyz"), project_root),
-        "VALID_XYZ": resolve_path(raw.get("valid_xyz", "data/valid_interp.xyz"), project_root),
+        "VALID_XYZ": resolve_path(raw.get("valid_xyz", "data/valid.xyz"), project_root),
 
         "RNG_SEED": int(raw.get("rng_seed", 31415)),
 
@@ -196,8 +196,8 @@ def output_paths(selected_names, cfg: dict[str, Any], natoms):
     else:
         suffix = "_".join(selected_names)
 
-    train_path = cfg["TRAIN_XYZ"].with_name(f"train_{suffix}_{natoms[0]}.xyz")
-    valid_path = cfg["VALID_XYZ"].with_name(f"valid_{suffix}_{natoms[1]}.xyz")
+    train_path = cfg["TRAIN_XYZ"].with_name(f"{cfg["TRAIN_XYZ"].name}_{suffix}_{natoms[0]}.xyz")
+    valid_path = cfg["VALID_XYZ"].with_name(f"{cfg["VALID_XYZ"].name}_{suffix}_{natoms[1]}.xyz")
     return train_path, valid_path
 
 

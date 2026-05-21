@@ -2,6 +2,7 @@ import os
 import re
 import numpy as np
 from pathlib import Path
+from ase import Atoms
 from .triple_zeta import triple_zeta_basis as TZVP
 
 # ============================================================

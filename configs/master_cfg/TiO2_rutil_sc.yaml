@@ -1,0 +1,41 @@
+# Split is 10/90
+structure: TiO2_rutil-pbe
+results_group_dir: TiO2_rutil_PBE_sc
+
+dry_run: false
+smoke_test: false
+max_runs: null
+max_parallel_trainings: 1
+
+crystal_db_path: data/ref_db.h5
+
+eval_settings:
+  device: cuda
+  default_dtype: float64
+  frechet: true
+  fmax: 1.0e-11
+  compare_crystal_modes: true
+  crystal_hess_path: null
+  crystal_freq_out_path: null
+  crystal_hessian_units: hartree/bohr^2
+
+base_config:
+  train_file: sc_train.xyz_TiO2_rutil_PBE_495.xyz
+  valid_file: sc_valid.xyz_TiO2_rutil_PBE_55.xyz
+  chem: TiO2
+  atomic_numbers: [8, 22]
+  model_type: MACELES
+  E0s: average
+  batch_size: 2
+  valid_batch_size: 2
+  max_epochs: 173
+
+sweep_grid:
+  seed: [2]
+  r_max: [3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0]
+  batch_size: [2]
+  valid_batch_size: [2]
+  energy_weight: [2.0]
+  forces_weight: [100.0]
+  use_stress: [false]
+  stress_weight: [2.0] 
