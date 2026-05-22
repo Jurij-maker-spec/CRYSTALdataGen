@@ -389,7 +389,7 @@ def main() -> None:
 
 
     # ============================================================
-    # Resume block
+    # Handling cases block
     # ============================================================
     if args.resume:
         resume_sweep_dir = cfg.get("resume_sweep_dir")
@@ -472,6 +472,9 @@ def main() -> None:
         print(f"Master summary JSON: {master_summary_path}")
         return
 
+    # ============================================================
+    # Resume block
+    # ============================================================
     if args.resume:
         print(f"Resume mode: {sweep_root}")
         print(f"Run configs found: {len(run_config_paths)}")
@@ -529,7 +532,13 @@ def main() -> None:
         print(f"  checkpoint train pending : {len(train_pending) - len(fresh_train_pending)}")
 
         # 1. First evaluate models that already finished training.
-        for run_config_path in eval_pending:
+        n_eval_pending = len(eval_pending)
+        for i, run_config_path in enumerate(eval_pending, start=1):
+            progress_pct = 100.0 * i / n_eval_pending if n_eval_pending else 100.0
+
+            print("\n" + "=" * 90)
+            print(f"[RESUME-EVAL {i:03d}/{n_eval_pending:03d}] ({progress_pct:5.1f}%)")
+            print("=" * 90)
             train_result = train_result_from_finished_run(run_config_path)
             master_summary["training_results"].append(train_result)
             save_json(master_summary, master_summary_path)
@@ -551,11 +560,21 @@ def main() -> None:
         # 2. Then restart interrupted trainings from latest checkpoint.
         if train_pending:
             print("\nStarting/resuming pending trainings...")
-
+            n_train_pending = len(train_pending)
+            n_train_completed = 0
             for train_result in run_sweep_parallel(
                 run_config_paths=train_pending,
                 max_parallel=max_parallel,
             ):
+                n_train_completed += 1
+                progress_pct = 100.0 * n_train_completed / n_train_pending
+                print("\n" + "=" * 90)
+                print(
+                    f"[RESUME-TRAIN {n_train_completed:03d}/{n_train_pending:03d}] "
+                    f"({progress_pct:5.1f}%)"
+                )
+                print("=" * 90)
+
                 master_summary["training_results"].append(train_result)
                 save_json(master_summary, master_summary_path)
 
@@ -645,64 +664,29 @@ def main() -> None:
             save_json(master_summary, master_summary_path)
             continue
 
-        try:
-            model_path = choose_model_path(train_result)
-            print(f"Starting evaluation for: {run_name}")
-            print(f"Using model: {model_path}")
+        evaluate_train_result_and_update_summary(
+            train_result=train_result,
+            structure=structure,
+            cif_path=cif_path,
+            crystal_db_path=crystal_db_path,
+            eval_settings=eval_settings,
+            results_group_dir=results_group_dir,
+            sweep_root=sweep_root,
+            master_summary=master_summary,
+            master_summary_path=master_summary_path,
+            master_csv_path=master_csv_path,
+            best_model_path=best_model_path,
+        )
 
-            eval_result = run_single_model_eval(
-                evaluate_model_func=evaluate_model,
-                train_result=train_result,
-                structure=structure,
-                cif_path=cif_path,
-                crystal_db_path=crystal_db_path,
-                eval_settings=eval_settings,
-                dataset_split=results_group_dir,
-                sweep_id=sweep_root.name,
-                use_deploy_model_if_available=USE_DEPLOY_MODEL_IF_AVAILABLE,
-            )
+        print(
+            f"[DONE {n_completed:03d}/{n_total_runs:03d}] "
+            f"{run_name}"
+        )
 
-            eval_record = make_compact_eval_record(run_name, train_result, eval_result)
-            master_summary["evaluation_results"].append(eval_record)
-
-            row = build_eval_row(train_result=train_result, eval_result=eval_result, error=None)
-            append_master_csv(row, master_csv_path)
-
-            best_model = choose_best_model(master_summary)
-            master_summary["best_model"] = best_model
-            save_json(master_summary, master_summary_path)
-            if best_model is not None:
-                save_json(best_model, best_model_path)
-            print(
-                f"[DONE {n_completed:03d}/{n_total_runs:03d}] "
-                f"{run_name}"
-            )
-            if best_model is not None:
-                print(f"Current best model: {best_model['run_name']}")
-                print(f"Composite score   : {best_model['metrics'].get('composite_score')}")
-
-        except Exception as exc:
-            eval_record = {
-                "run_name": run_name,
-                "status": "failed",
-                "evaluated_at": now_iso(),
-                "train_result": train_result,
-                "error": repr(exc),
-                "traceback": traceback.format_exc(),
-            }
-            master_summary["evaluation_results"].append(eval_record)
-
-            row = build_eval_row(train_result=train_result, eval_result=None, error=repr(exc))
-            append_master_csv(row, master_csv_path)
-
-            best_model = choose_best_model(master_summary)
-            master_summary["best_model"] = best_model
-            save_json(master_summary, master_summary_path)
-            if best_model is not None:
-                save_json(best_model, best_model_path)
-
-            print(f"Evaluation failed for: {run_name}")
-            print(repr(exc))
+        if master_summary.get("best_model") is not None:
+            best_model = master_summary["best_model"]
+            print(f"Current best model: {best_model['run_name']}")
+            print(f"Composite score   : {best_model['metrics'].get('composite_score')}")
 
     master_summary["best_model"] = choose_best_model(master_summary)
     master_summary["finished_at"] = now_iso()

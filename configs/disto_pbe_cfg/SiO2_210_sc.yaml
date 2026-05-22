@@ -5,9 +5,9 @@ structures_dir: structures_pbe
 only: [SiO2_PBE]
 
 distortion_mode: total_random
-n_structures: 100
-rng_seed: 37629
-charge: "200"
+n_structures: 200
+rng_seed: 173
+charge: "210"
 
 supercell: [2,2,2]
 overwrite: true

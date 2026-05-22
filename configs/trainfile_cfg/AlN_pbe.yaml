@@ -3,8 +3,8 @@ project_root: /home/jha/jha/python_scripts/CRYSTALdataGen
 h5_path: data/train_db.h5
 export_metadata_json: data/tv_meta_pbe.json
 
-train_xyz: data/train_pbe.xyz
-valid_xyz: data/valid_pbe.xyz
+train_xyz: data/sc_train_pbe.xyz
+valid_xyz: data/sc_valid_pbe.xyz
 
 rng_seed: 31415
 
@@ -28,4 +28,4 @@ structure_names: null
 use_structure_suffix_in_output: true
 
 distortion_id_prefix: null
-distortion_id_prefixes: null
+distortion_id_prefixes: ['010', '200', '210']

@@ -3,8 +3,8 @@ project_root: /home/jha/jha/python_scripts/CRYSTALdataGen
 h5_path: data/train_db.h5
 export_metadata_json: data/tv_meta.json
 
-train_xyz: data/sc_train.xyz
-valid_xyz: data/sc_valid.xyz
+train_xyz: data/sc_train
+valid_xyz: data/sc_valid
 
 rng_seed: 31415
 
