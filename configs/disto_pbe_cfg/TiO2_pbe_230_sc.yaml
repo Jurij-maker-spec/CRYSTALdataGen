@@ -1,0 +1,32 @@
+# At roomtemperature atoms can be displaced as much as 10% of the latticeconstant
+root: /home/jha/jha/python_scripts/CRYSTALdataGen
+structures_dir: structures_pbe
+
+only: [TiO2_rutil_PBE]
+
+distortion_mode: total_random
+n_structures: 200
+rng_seed: 8253
+charge: "230"
+
+supercell: [2,2,2]
+overwrite: true
+
+disp_max: 0.1
+strain_max: 0.01
+
+ncores: 10
+partition: GPU_aq
+rune: 5
+
+shrink: [4, 4]
+maxcycle: 500
+use_gradcal: true
+savewf: false
+mulliken: false
+functional: PBESOLXC
+
+max_generation_attempts_per_structure: 20000
+reject_on_short_distance: true
+
+

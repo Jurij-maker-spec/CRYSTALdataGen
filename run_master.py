@@ -63,6 +63,23 @@ USE_DEPLOY_MODEL_IF_AVAILABLE = False
 # HELPERS
 # ============================================================
 
+def rebase_run_config_for_current_machine(
+    run_config_path: Path,
+    *,
+    restart_latest: bool,
+) -> None:
+    run_dir = run_config_path.parent
+    run_cfg = load_json(run_config_path)
+
+    run_cfg["project_root"] = str(PROJECT_ROOT)
+    run_cfg["data_dir"] = str(PROJECT_ROOT / "data")
+    run_cfg["deploy_root"] = str(PROJECT_ROOT / "models")
+    run_cfg["run_dir"] = str(run_dir)
+    run_cfg["restart_latest"] = restart_latest
+
+    save_json(run_cfg, run_config_path)
+
+
 def checkpoint_exists(run_dir: Path) -> bool:
     checkpoint_dir = run_dir / "checkpoints"
     if not checkpoint_dir.exists():
@@ -500,15 +517,20 @@ def main() -> None:
                 continue
 
             if checkpoint_exists(run_dir):
-                enable_restart_latest(run_config_path)
+                rebase_run_config_for_current_machine(
+                    run_config_path,
+                    restart_latest=True,
+                )
                 train_pending.append(run_config_path)
                 print(f"[TRAIN-RESUME] Checkpoint found: {run_name}")
                 continue
 
             # No model and no checkpoint means the run was prepared but never started.
             # Start it normally.
-            run_cfg["restart_latest"] = False
-            save_json(run_cfg, run_config_path)
+            rebase_run_config_for_current_machine(
+                run_config_path,
+                restart_latest=False,
+            )
 
             train_pending.append(run_config_path)
             fresh_train_pending.append(run_config_path)
@@ -580,6 +602,8 @@ def main() -> None:
 
                 run_name = train_result.get("run_name", "<unknown>")
                 print(f"Resumed training finished: {run_name} | status={train_result.get('status')}")
+                if train_result.get("status") != "ok":
+                    print(f"Training error: {train_result.get('error')}")
 
                 if train_result.get("status") != "ok":
                     row = build_eval_row(
