@@ -1,0 +1,41 @@
+structure: SiO2_PBE
+results_group_dir: SiO2_PBE_sc
+
+dry_run: false
+smoke_test: false
+max_runs: null
+max_parallel_trainings: 1
+
+crystal_db_path: data/ref_db.h5
+
+eval_settings:
+  device: cuda
+  default_dtype: float64
+  frechet: true
+  fmax: 1.0e-11
+  compare_crystal_modes: true
+  crystal_hess_path: null
+  crystal_freq_out_path: null
+  crystal_hessian_units: hartree/bohr^2
+
+base_config:
+  train_file: sc_train_pbe_SiO2_PBE_444.xyz
+  valid_file: sc_valid_pbe_SiO2_PBE_49.xyz
+  chem: SiO2
+  atomic_numbers: [8, 14]
+  model_type: MACELES
+  E0s: average
+  batch_size: 2
+  valid_batch_size: 2
+  max_epochs: 173
+
+
+sweep_grid:
+  seed: [1, 2]
+  r_max: [2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5]
+  batch_size: [2]
+  valid_batch_size: [2]
+  energy_weight: [1.0]
+  forces_weight: [100.0]
+  use_stress: [false]
+  stress_weight: [2.0] 
