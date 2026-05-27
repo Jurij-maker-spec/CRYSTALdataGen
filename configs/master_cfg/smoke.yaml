@@ -11,7 +11,6 @@ eval_settings:
   default_dtype: float64
   frechet: false
   fmax: 0.01
-  calculator_mode: '0'
   compare_crystal_modes: true
   crystal_hess_path: null
   crystal_freq_out_path: null

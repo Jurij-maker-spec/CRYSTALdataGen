@@ -17,6 +17,8 @@ eval_settings:
   crystal_hess_path: null
   crystal_freq_out_path: null
   crystal_hessian_units: hartree/bohr^2
+  write_ref_db: true
+  ref_db_path: data/ref_db.h5
 
 base_config:
   train_file: sc_train_pbe_SiO2_PBE_444.xyz

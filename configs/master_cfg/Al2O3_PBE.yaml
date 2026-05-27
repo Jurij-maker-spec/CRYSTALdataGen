@@ -1,5 +1,5 @@
-structure: SiO2
-results_group_dir: SiO2_1000_10_90
+structure: Al2O3_PBE
+results_group_dir: Al2O3_PBE
 
 dry_run: false
 smoke_test: false
@@ -21,10 +21,10 @@ eval_settings:
   ref_db_path: data/ref_db.h5
 
 base_config:
-  train_file: train_SiO2.xyz
-  valid_file: valid_SiO2.xyz
-  chem: SiO2
-  atomic_numbers: [8, 14]
+  train_file: train_Al2O3_PBE_539.xyz
+  valid_file: valid_Al2O3_PBE_60.xyz
+  chem: Al2O3
+  atomic_numbers: [8, 13]
   model_type: MACELES
   E0s: average
   batch_size: 2
@@ -33,10 +33,10 @@ base_config:
 
 sweep_grid:
   seed: [1, 2]
-  r_max: [4.0, 4.5, 5.0, 6.5]
-  batch_size: [2]
-  valid_batch_size: [2]
-  energy_weight: [1.0, 2.0, 3.0]
-  forces_weight: [100.0]
+  r_max: [2.5, 2.75, 3.0, 3.25, 3.5]
+  batch_size: [1]
+  valid_batch_size: [1]
+  energy_weight: [2.0]
+  forces_weight: [75, 100.0]
   use_stress: [false]
   stress_weight: [2.0] 

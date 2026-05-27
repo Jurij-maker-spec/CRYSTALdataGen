@@ -13,11 +13,12 @@ eval_settings:
   default_dtype: float64
   frechet: true
   fmax: 1.0e-11
-  calculator_mode: "0"
   compare_crystal_modes: true
   crystal_hess_path: null
   crystal_freq_out_path: null
   crystal_hessian_units: hartree/bohr^2
+  write_ref_db: true
+  ref_db_path: data/ref_db.h5
 
 base_config:
   train_file: train_Al2O3_540.xyz
@@ -29,21 +30,6 @@ base_config:
   batch_size: 2
   valid_batch_size: 2
   max_epochs: 173
-  energy_weight: 1.0
-  forces_weight: 100.0
-  r_max: 3.5
-  use_stress: false
-  stress_weight: 2.0
-  default_dtype: float64
-  device: cuda
-  num_workers: 0
-  use_ema: true
-  use_swa: false
-  restart_latest: false
-  run_extraction: true
-  overwrite_existing_logs: true
-  env:
-    OMP_NUM_THREADS: "1"
 
 sweep_grid:
   seed: [1]

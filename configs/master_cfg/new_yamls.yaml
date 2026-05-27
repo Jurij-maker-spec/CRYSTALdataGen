@@ -3,7 +3,6 @@
   default_dtype: float64
   frechet: true
   fmax: 1.0e-11
-  calculator_mode: "0"
 
   compare_crystal_modes: true
   crystal_hess_path: null
