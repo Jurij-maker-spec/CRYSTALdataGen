@@ -551,15 +551,12 @@ def summarize_crystal_mode_comparison(comparison: dict, crystal_hess_path: Path,
     return out
 
 
-def run_optional_crystal_mode_comparison(
+def run_crystal_mode_comparison(
         atoms: Atoms, 
         mace_modes: dict, 
         structure: str, 
         output_dir: Path, 
         enabled: bool = False, 
-        crystal_hess_path: str | Path | None = None, 
-        freq_out_path: str | Path | None = None, 
-        crystal_structures_root: str | Path = DEFAULT_CRYSTAL_STRUCTURES_ROOT, 
         crystal_hessian_units: str = DEFAULT_CRYSTAL_HESSIAN_UNITS, 
         skip_first: int = 3, 
         degeneracy_tol: float = 1.0,
@@ -607,7 +604,7 @@ def run_optional_crystal_mode_comparison(
                 title=f"{structure}: CRYSTAL DB vs MACE mode overlap",
             )
 
-            print_mode_match_summary(comparison.get("matches", []))
+            # print_mode_match_summary(comparison.get("matches", []))
             print_group_match_summary(comparison.get("subgroups", []))
 
             return summarize_crystal_mode_comparison(
@@ -624,70 +621,6 @@ def run_optional_crystal_mode_comparison(
             print("\nMode comparison from ref_db failed; falling back to file parsing.")
             print(exc)
             summary["error"] = f"ref_db failed: {exc}"
-
-    if crystal_hess_path is None:
-        crystal_hess_path = default_crystal_hessian_path(structure, crystal_structures_root)
-    crystal_hess_path = Path(crystal_hess_path).resolve()
-    if freq_out_path is None:
-        default_freq_out = default_crystal_freq_out_path(structure, crystal_structures_root)
-        freq_out_path = default_freq_out if default_freq_out.exists() else None
-    else:
-        freq_out_path = Path(freq_out_path).resolve()
-    summary.update({
-        "crystal_hess_path": crystal_hess_path,
-        "freq_out_path": freq_out_path,
-        "heatmap_outfile": heatmap_outfile,
-    })
-    if not crystal_hess_path.exists():
-        summary["error"] = f"No CRYSTAL Hessian found at: {crystal_hess_path}"
-        print(f"\n{summary['error']}")
-        return summary
-    try:
-        print("\n=== CRYSTAL Hessian mode comparison ===")
-        comparison = run_mode_comparison(
-            atoms=atoms,
-            mace_modes=mace_modes,
-            crystal_hess_path=crystal_hess_path,
-            freq_out_path=freq_out_path,
-            crystal_hessian_units=crystal_hessian_units,
-            skip_first=skip_first,
-            degeneracy_tol=degeneracy_tol,
-            heatmap_outfile=heatmap_outfile,
-            title=f"{structure}: CRYSTAL vs MACE mode overlap",
-        )
-        print_mode_match_summary(comparison.get("matches", []))
-        print_group_match_summary(comparison.get("subgroups", []))
-        group_heatmap = comparison.get("group_heatmap_outfile")
-        if group_heatmap is not None:
-            print(f"Saved degenerate-group heatmap to: {group_heatmap}")
-        print("\nDegenerate/subspace comparison:")
-        print(f"{'g_ref':>6s} {'g_test':>6s} {'ref_modes':>18s} {'test_modes':>18s} {'subspace_overlap':>18s}")
-        print("-" * 70)
-        for g in comparison.get("subgroups", []) or []:
-            ref_modes = [int(x + 1) for x in g.get("ref_modes", [])]
-            test_modes = [int(x + 1) for x in g.get("test_modes", [])]
-            print(
-                f"{int(g.get('group_ref_index', -1)) + 1:6d} "
-                f"{int(g.get('group_test_index', -1)) + 1:6d} "
-                f"{str(ref_modes):>18s} "
-                f"{str(test_modes):>18s} "
-                f"{float(g.get('subspace_overlap', np.nan)):18.6f}"
-            )
-        print(f"\nSaved mode-overlap heatmap to: {heatmap_outfile}")
-        return summarize_crystal_mode_comparison(
-            comparison=comparison,
-            crystal_hess_path=crystal_hess_path,
-            freq_out_path=freq_out_path,
-            crystal_hessian_units=crystal_hessian_units,
-            skip_first=skip_first,
-            degeneracy_tol=degeneracy_tol,
-            heatmap_outfile=heatmap_outfile,
-        )
-    except Exception as exc:
-        summary["error"] = str(exc)
-        print("\nMode comparison against CRYSTAL failed:")
-        print(exc)
-        return summary
 
 
 def evaluate_model(
@@ -869,15 +802,12 @@ def evaluate_model(
             "intensity_spearman_r": matched["intensity_spearman_r"],
         }
 
-    crystal_mode_comparison = run_optional_crystal_mode_comparison(
+    crystal_mode_comparison = run_crystal_mode_comparison(
         atoms=atoms,
         mace_modes=mace_modes,
         structure=structure,
         output_dir=output_dir,
         enabled=compare_crystal_modes,
-        crystal_hess_path=crystal_hess_path,
-        freq_out_path=crystal_freq_out_path,
-        crystal_structures_root=crystal_structures_root,
         crystal_hessian_units=crystal_hessian_units,
         skip_first=mode_skip_first,
         degeneracy_tol=mode_degeneracy_tol,

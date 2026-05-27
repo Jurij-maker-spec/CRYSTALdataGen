@@ -443,6 +443,7 @@ def run_single_model_eval(
     )
     result_dir = Path(train_result["result_dir"])
 
+    # print(eval_settings)
     return evaluate_model_func(
         model_path=model_path,
         structure=structure,
