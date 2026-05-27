@@ -35,8 +35,6 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
 
-
-
 # ============================================================
 # USER SETTINGS
 # ============================================================
@@ -62,6 +60,31 @@ N_CLUSTERS = 3
 
 USE_MPLSTYLE = True
 MPLSTYLE_PATH = "style.mplstyle"
+
+# ============================================================
+# METRIC RANKING CONFIG
+# ============================================================
+
+LOWER_IS_BETTER = [
+    "composite_score",
+    "freq_mae_ir_cm1",
+    "freq_rmse_ir_cm1",
+    "freq_mae_ir_weighted_cm1",
+    "spectrum_rel_l2",
+    "score_freq_mae_term",
+    "score_freq_weighted_term",
+    "score_spectrum_l2_term",
+    "score_intensity_corr_term",
+    "score_subspace_overlap_term",
+    "score_mode_overlap_term",
+]
+
+HIGHER_IS_BETTER = [
+    "intensity_pearson_r",
+    "intensity_spearman_r",
+    "mean_mode_overlap",
+    "mean_subspace_overlap",
+]
 
 
 # ============================================================
@@ -164,6 +187,21 @@ def load_clean_dataframe(csv_path: Path) -> pd.DataFrame:
     if "forces_weight" not in df.columns:
         df["forces_weight"] = 0.0
 
+    optional_metric_columns = [
+        "mean_mode_overlap",
+        "mean_subspace_overlap",
+        "score_freq_mae_term",
+        "score_freq_weighted_term",
+        "score_spectrum_l2_term",
+        "score_intensity_corr_term",
+        "score_subspace_overlap_term",
+        "score_mode_overlap_term",
+    ]
+
+    for col in optional_metric_columns:
+        if col not in df.columns:
+            df[col] = np.nan
+
     df = df.dropna(subset=["composite_score"]).copy()
     df = df.sort_values("composite_score").reset_index(drop=True)
 
@@ -191,6 +229,91 @@ def print_top_models(df: pd.DataFrame, top_k: int) -> None:
 
     print("\nTop models:\n")
     print(df.head(top_k)[cols])
+
+
+# ============================================================
+# BEST-BY-METRIC SUMMARY
+# ============================================================
+
+def best_by_metric(
+    df: pd.DataFrame,
+    metric: str,
+    higher_is_better: bool = False,
+):
+    if metric not in df.columns:
+        return None
+
+    sub = df[["run_name", metric]].copy()
+    sub = sub.dropna(subset=[metric])
+
+    if sub.empty:
+        return None
+
+    idx = sub[metric].idxmax() if higher_is_better else sub[metric].idxmin()
+
+    row = df.loc[idx]
+
+    return {
+        "metric": metric,
+        "direction": (
+            "higher_is_better"
+            if higher_is_better
+            else "lower_is_better"
+        ),
+        "run_name": row.get("run_name"),
+        "value": row.get(metric),
+        "r_max": row.get("r_max"),
+        "energy_weight": row.get("energy_weight"),
+        "forces_weight": row.get("forces_weight"),
+        "seed": row.get("seed"),
+    }
+
+
+def build_best_by_metric_summary(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+
+    for metric in LOWER_IS_BETTER:
+        rec = best_by_metric(
+            df,
+            metric,
+            higher_is_better=False,
+        )
+        if rec is not None:
+            rows.append(rec)
+
+    for metric in HIGHER_IS_BETTER:
+        rec = best_by_metric(
+            df,
+            metric,
+            higher_is_better=True,
+        )
+        if rec is not None:
+            rows.append(rec)
+
+    return pd.DataFrame(rows)
+
+
+def print_best_by_metric(best_df: pd.DataFrame) -> None:
+    if len(best_df) == 0:
+        print("\nNo metric ranking data available.")
+        return
+
+    print("\nBest models by metric:\n")
+
+    cols = [
+        "metric",
+        "value",
+        "run_name",
+        "r_max",
+        "energy_weight",
+        "forces_weight",
+        "seed",
+    ]
+
+    cols = [c for c in cols if c in best_df.columns]
+
+    print(best_df[cols].to_string(index=False))
+
 
 
 # ============================================================
@@ -811,6 +934,14 @@ def main() -> None:
     df = load_clean_dataframe(CSV_PATH)
 
     print_top_models(df, TOP_K)
+    best_metric_df = build_best_by_metric_summary(df)
+
+    print_best_by_metric(best_metric_df)
+
+    best_metric_df.to_csv(
+        CSV_DIR / "best_by_metric.csv",
+        index=False,
+    )
 
     df.head(TOP_K).to_csv(CSV_DIR / f"top{TOP_K}.csv", index=False)
 

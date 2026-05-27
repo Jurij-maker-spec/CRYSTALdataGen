@@ -183,6 +183,8 @@ def write_model_evaluation(
     z_mode=None,
     nu_grid_cm1=None,
     ir_spec=None,
+    mode_matching=None,
+    ir_matching=None,
     ranking_metrics: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
 ):
@@ -230,6 +232,9 @@ def write_model_evaluation(
             if ir_spec is not None:
                 overwrite_dataset(irg, "intensity_relative", np.asarray(ir_spec))
 
+        write_mode_matching(eg, mode_matching)
+        write_ir_matching(eg, ir_matching)
+
         if ranking_metrics is not None:
             rg = eg.create_group("ranking_metrics")
             write_attrs(rg, ranking_metrics)
@@ -237,6 +242,181 @@ def write_model_evaluation(
         write_attrs(eg, metadata)
 
         eg.attrs["schema"] = "model_evaluation_v1"
+
+
+def write_scalar_summary_group(group: h5py.Group, name: str, summary: dict[str, Any] | None):
+    if not summary:
+        return
+
+    sg = overwrite_group(group, name)
+    write_attrs(sg, summary)
+
+
+def write_mode_matching(group: h5py.Group, mode_matching: dict[str, Any] | None):
+    if not mode_matching:
+        return
+
+    mg = overwrite_group(group, "mode_matching")
+
+    # Metadata attrs
+    for key in [
+        "source",
+        "skip_first",
+        "degeneracy_tol",
+    ]:
+        if key in mode_matching:
+            value = clean_attr_value(mode_matching[key])
+            if value is not None:
+                mg.attrs[key] = value
+
+    crystal = mode_matching.get("crystal", {})
+    for key in [
+        "origin_shift",
+        "max_atom_mismatch",
+    ]:
+        if key in crystal:
+            value = crystal[key]
+            if value is not None:
+                overwrite_dataset(mg, key, np.asarray(value))
+
+    if "atom_permutation" in crystal and crystal["atom_permutation"] is not None:
+        overwrite_dataset(
+            mg,
+            "atom_permutation",
+            np.asarray(crystal["atom_permutation"], dtype=np.int32),
+        )
+
+    # Overlap matrices
+    matrices = overwrite_group(mg, "overlap_matrices")
+
+    for key in [
+        "overlap_full",
+        "overlap_cut",
+        "group_overlap_matrix",
+    ]:
+        if key in mode_matching and mode_matching[key] is not None:
+            overwrite_dataset(
+                matrices,
+                key,
+                np.asarray(mode_matching[key], dtype=np.float64),
+            )
+
+    # Mode matches table
+    matches = mode_matching.get("matches", []) or []
+    if matches:
+        mm = overwrite_group(mg, "mode_matches")
+
+        overwrite_dataset(mm, "ref_mode_index", np.asarray([m["mode_ref"] for m in matches], dtype=np.int32))
+        overwrite_dataset(mm, "model_mode_index", np.asarray([m["mode_test"] for m in matches], dtype=np.int32))
+        overwrite_dataset(mm, "ref_freq_cm1", np.asarray([m["freq_ref"] for m in matches], dtype=np.float64))
+        overwrite_dataset(mm, "model_freq_cm1", np.asarray([m["freq_test"] for m in matches], dtype=np.float64))
+        overwrite_dataset(mm, "delta_cm1", np.asarray([m["delta_cm1"] for m in matches], dtype=np.float64))
+        overwrite_dataset(mm, "abs_delta_cm1", np.asarray([abs(m["delta_cm1"]) for m in matches], dtype=np.float64))
+        overwrite_dataset(mm, "overlap", np.asarray([m["overlap"] for m in matches], dtype=np.float64))
+
+    # Degenerate/subspace group matches table
+    groups = mode_matching.get("subgroups", []) or []
+    if groups:
+        gg = overwrite_group(mg, "group_matches")
+
+        ref_starts = []
+        ref_ends = []
+        model_starts = []
+        model_ends = []
+
+        for g in groups:
+            ref_modes = np.asarray(g["ref_modes"], dtype=int)
+            model_modes = np.asarray(g["test_modes"], dtype=int)
+
+            ref_starts.append(int(ref_modes[0]))
+            ref_ends.append(int(ref_modes[-1]))
+            model_starts.append(int(model_modes[0]))
+            model_ends.append(int(model_modes[-1]))
+
+        overwrite_dataset(gg, "ref_group_index", np.asarray([g["group_ref_index"] for g in groups], dtype=np.int32))
+        overwrite_dataset(gg, "model_group_index", np.asarray([g["group_test_index"] for g in groups], dtype=np.int32))
+        overwrite_dataset(gg, "ref_group_start", np.asarray(ref_starts, dtype=np.int32))
+        overwrite_dataset(gg, "ref_group_end", np.asarray(ref_ends, dtype=np.int32))
+        overwrite_dataset(gg, "model_group_start", np.asarray(model_starts, dtype=np.int32))
+        overwrite_dataset(gg, "model_group_end", np.asarray(model_ends, dtype=np.int32))
+        overwrite_dataset(gg, "ref_freq_mean_cm1", np.asarray([g["ref_freq_mean"] for g in groups], dtype=np.float64))
+        overwrite_dataset(gg, "model_freq_mean_cm1", np.asarray([g["test_freq_mean"] for g in groups], dtype=np.float64))
+        overwrite_dataset(gg, "delta_cm1", np.asarray([g["delta_cm1"] for g in groups], dtype=np.float64))
+        overwrite_dataset(gg, "subspace_overlap", np.asarray([g["subspace_overlap"] for g in groups], dtype=np.float64))
+
+    # Scalar summaries
+    mode_overlaps = [m["overlap"] for m in matches] if matches else []
+    subspace_overlaps = [g["subspace_overlap"] for g in groups] if groups else []
+
+    summary = {}
+
+    if mode_overlaps:
+        summary["mean_mode_overlap"] = float(np.mean(mode_overlaps))
+        summary["min_mode_overlap"] = float(np.min(mode_overlaps))
+
+    if subspace_overlaps:
+        summary["mean_subspace_overlap"] = float(np.mean(subspace_overlaps))
+        summary["min_subspace_overlap"] = float(np.min(subspace_overlaps))
+
+    if "overlap_cut" in mode_matching and mode_matching["overlap_cut"] is not None:
+        O = np.asarray(mode_matching["overlap_cut"], dtype=float)
+        if O.ndim == 2 and O.size > 0:
+            n_diag = min(O.shape)
+            diag = np.diag(O[:n_diag, :n_diag])
+            summary["diagonal_overlap_mean"] = float(np.mean(diag))
+
+            offdiag = O.copy()
+            for i in range(n_diag):
+                offdiag[i, i] = np.nan
+
+            summary["offdiag_leakage_mean"] = float(np.nanmean(offdiag))
+
+    write_scalar_summary_group(mg, "summaries", summary)
+
+
+def write_ir_matching(group: h5py.Group, ir_matching: dict[str, Any] | None):
+    if not ir_matching:
+        return
+
+    ig = overwrite_group(group, "ir_matching")
+
+    pred_freqs = ir_matching.get("pred_freqs_matched_cm")
+    ref_freqs = ir_matching.get("ref_freqs_matched_cm")
+    pred_intensities = ir_matching.get("pred_intensities_matched")
+    ref_intensities = ir_matching.get("ref_intensities_matched")
+    abs_errors = ir_matching.get("freq_abs_errors_cm")
+
+    if pred_freqs is not None and ref_freqs is not None:
+        pg = overwrite_group(ig, "matched_peaks")
+
+        pred_freqs = np.asarray(pred_freqs, dtype=np.float64)
+        ref_freqs = np.asarray(ref_freqs, dtype=np.float64)
+
+        overwrite_dataset(pg, "model_freq_cm1", pred_freqs)
+        overwrite_dataset(pg, "ref_freq_cm1", ref_freqs)
+        overwrite_dataset(pg, "delta_cm1", pred_freqs - ref_freqs)
+
+        if abs_errors is not None:
+            overwrite_dataset(pg, "abs_delta_cm1", np.asarray(abs_errors, dtype=np.float64))
+        else:
+            overwrite_dataset(pg, "abs_delta_cm1", np.abs(pred_freqs - ref_freqs))
+
+        if pred_intensities is not None:
+            overwrite_dataset(pg, "model_intensity", np.asarray(pred_intensities, dtype=np.float64))
+
+        if ref_intensities is not None:
+            overwrite_dataset(pg, "ref_intensity", np.asarray(ref_intensities, dtype=np.float64))
+
+    summary = {
+        "matched_mode_count": ir_matching.get("matched_mode_count"),
+        "freq_mae_ir_cm1": ir_matching.get("freq_mae_ir_cm1"),
+        "freq_rmse_ir_cm1": ir_matching.get("freq_rmse_ir_cm1"),
+        "freq_mae_ir_weighted_cm1": ir_matching.get("freq_mae_ir_weighted_cm1"),
+        "intensity_pearson_r": ir_matching.get("intensity_pearson_r"),
+        "intensity_spearman_r": ir_matching.get("intensity_spearman_r"),
+    }
+
+    write_scalar_summary_group(ig, "summaries", summary)
 
 
 def read_crystal_reference(ref_db_path: str | Path, structure: str) -> dict:

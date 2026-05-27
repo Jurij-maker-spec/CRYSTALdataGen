@@ -357,41 +357,66 @@ def match_ir_modes(
 
 
 def make_composite_score(
-    n_imag_modes: int,
     freq_mae_ir_cm1: float | None,
     freq_mae_ir_weighted_cm1: float | None,
     spectrum_rel_l2: float | None,
     intensity_pearson_r: float | None,
-) -> float | None:
+    mean_mode_overlap: float | None = None,
+    mean_subspace_overlap: float | None = None,
+) -> tuple[float | None, dict]:
     """
     Lower is better.
-    To make the evaluation more sensitive to correct peak positions
-    1. stronger penalty for frequency deviations
-    2. non-linear amplification of large frequency errors
-    3. reduced dominance of spectrum L2
-    => now more frequency responsive
+    Returns total score and individual score contributions.
     """
-    if freq_mae_ir_cm1 is None and spectrum_rel_l2 is None:
-        return None
+    components = {
+        "freq_mae_term": None,
+        "freq_weighted_term": None,
+        "spectrum_l2_term": None,
+        "intensity_corr_term": None,
+        "subspace_overlap_term": None,
+        "mode_overlap_term": None,
+        "total": None,
+    }
+
+    if (
+        freq_mae_ir_cm1 is None
+        and spectrum_rel_l2 is None
+        and mean_mode_overlap is None
+        and mean_subspace_overlap is None
+    ):
+        return None, components
 
     score = 0.0
-    score += 10.0 * float(n_imag_modes)
 
     if freq_mae_ir_cm1 is not None:
-        score += 3.0 * float(freq_mae_ir_cm1)
+        components["freq_mae_term"] = 3.0 * float(freq_mae_ir_cm1)
+        score += components["freq_mae_term"]
 
     if freq_mae_ir_weighted_cm1 is not None:
-        score += 2.0 * float(freq_mae_ir_weighted_cm1)
+        components["freq_weighted_term"] = 2.0 * float(freq_mae_ir_weighted_cm1)
+        score += components["freq_weighted_term"]
 
     if spectrum_rel_l2 is not None:
-        score += 20.0 * float(spectrum_rel_l2)
+        components["spectrum_l2_term"] = 20.0 * float(spectrum_rel_l2)
+        score += components["spectrum_l2_term"]
 
     if intensity_pearson_r is not None:
-        score += 10.0 * (1.0 - float(intensity_pearson_r))
+        components["intensity_corr_term"] = 10.0 * (1.0 - float(intensity_pearson_r))
     else:
-        score += 10.0
+        components["intensity_corr_term"] = 10.0
+    score += components["intensity_corr_term"]
 
-    return float(score)
+    if mean_subspace_overlap is not None:
+        components["subspace_overlap_term"] = 20.0 * (1.0 - float(mean_subspace_overlap))
+        score += components["subspace_overlap_term"]
+
+    if mean_mode_overlap is not None:
+        components["mode_overlap_term"] = 10.0 * (1.0 - float(mean_mode_overlap))
+        score += components["mode_overlap_term"]
+
+    components["total"] = float(score)
+
+    return float(score), components
 
 
 def plot_ir_spectrum(
@@ -815,12 +840,16 @@ def evaluate_model(
         use_ref_db=True,
     )
 
-    composite_score = make_composite_score(
-        n_imag_modes=int(np.sum(imag_flags)),
+    mean_mode_overlap = crystal_mode_comparison.get("mean_mode_overlap")
+    mean_subspace_overlap = crystal_mode_comparison.get("mean_subspace_overlap")
+
+    composite_score, score_components = make_composite_score(
         freq_mae_ir_cm1=mode_match_summary["freq_mae_ir_cm1"],
         freq_mae_ir_weighted_cm1=mode_match_summary["freq_mae_ir_weighted_cm1"],
         spectrum_rel_l2=crystal_summary.get("spectrum_rel_l2"),
         intensity_pearson_r=mode_match_summary["intensity_pearson_r"],
+        mean_mode_overlap=mean_mode_overlap,
+        mean_subspace_overlap=mean_subspace_overlap,
     )
 
     phonopy_summary = {
@@ -870,6 +899,13 @@ def evaluate_model(
             "crystal_mode_mean_abs_freq_error_cm1": crystal_mode_comparison.get("mean_abs_freq_error_cm1"),
             "crystal_mode_mean_overlap": crystal_mode_comparison.get("mean_mode_overlap"),
             "crystal_mode_mean_subspace_overlap": crystal_mode_comparison.get("mean_subspace_overlap"),
+            "score_freq_mae_term": score_components["freq_mae_term"],
+            "score_freq_weighted_term": score_components["freq_weighted_term"],
+            "score_spectrum_l2_term": score_components["spectrum_l2_term"],
+            "score_intensity_corr_term": score_components["intensity_corr_term"],
+            "score_subspace_overlap_term": score_components["subspace_overlap_term"],
+            "score_mode_overlap_term": score_components["mode_overlap_term"],
+            "score_total": score_components["total"],
         },
         "artifacts": {
             "ir_plot": ir_plot_path,
@@ -915,6 +951,8 @@ def evaluate_model(
                     atoms=atoms,
                     bec_raw=bec,
                     bec_asr=bec_asr,
+                    mode_matching=crystal_mode_comparison,
+                    ir_matching=mode_match_summary,
                     frequencies_cm1=np.asarray(freqs_cm, dtype=float),
                     imag_flags=np.asarray(imag_flags, dtype=bool),
                     eigvals_SI=np.asarray(eigvals_SI, dtype=float),

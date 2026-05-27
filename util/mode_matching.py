@@ -355,10 +355,12 @@ def plot_mode_overlap_heatmap(
     fig, ax = plt.subplots(figsize=(7, 6))
     im = ax.imshow(O, origin="lower", aspect="auto", vmin=0.0, vmax=1.0)
     cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label(r"$| \langle u_\mathrm{ref} | u_\mathrm{test} \rangle |$")
+    cbar.set_label(r"$| \langle u_\mathrm{ref} | u_\mathrm{test} \rangle |$", size=12)
 
-    ax.set_xlabel("Test modes")
-    ax.set_ylabel("Reference modes")
+    # ax.set_xlabel("MACE modes")    # Test modes
+    # ax.set_ylabel("CRYSTAL modes") # Reference modes
+    ax.set_xlabel("MACE modes in cm⁻¹", size=12)    # Test modes
+    ax.set_ylabel("CRYSTAL modes in cm⁻¹", size=12) # Reference modes
     ax.set_title(title)
 
     if freqs_ref is not None:
@@ -442,8 +444,8 @@ def plot_group_overlap_heatmap(
     ax.set_xticks(np.arange(len(xlabels)))
     ax.set_xticklabels(xlabels, rotation=90)
 
-    ax.set_xlabel("Test groups, cm⁻¹", size=12)
-    ax.set_ylabel("Reference groups, cm⁻¹", size=12)
+    ax.set_xlabel("Test groups", size=12)       # Test groups
+    ax.set_ylabel("Reference groups", size=12)  # Reference groups
     ax.set_title(title)
 
     fig.tight_layout()
