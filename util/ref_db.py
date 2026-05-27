@@ -3,9 +3,21 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-
+from ase import Atoms
+import re
 import h5py
+import spglib
 import numpy as np
+
+def fix_label_case(label):
+    """Convert an atomic label like FE1 -> Fe1 or SI2 -> Si."""
+    match = re.match(r"([A-Za-z]+)([0-9]*)", label)
+    if not match:
+        return label  # leave unchanged if not matching expected pattern
+    elem, idx = match.groups()
+    # Only capitalize first letter, lowercase the rest (Fe, Si, Co, etc.)
+    elem_fixed = elem.capitalize()
+    return elem_fixed
 
 
 def ensure_parent(path: str | Path) -> Path:
@@ -44,6 +56,19 @@ def clean_attr_value(value):
     return value
 
 
+def standardize_to_primitive(atoms, no_idealize=False):
+    cell = (atoms.cell, atoms.get_scaled_positions(), atoms.numbers)
+    prim = spglib.standardize_cell(cell, to_primitive=True, no_idealize=no_idealize)
+    if prim is None:
+        raise ValueError("spglib.standardize_cell returned None")
+    return Atoms(
+        numbers=prim[2],
+        scaled_positions=prim[1],
+        cell=prim[0],
+        pbc=True,
+    )
+
+
 def write_attrs(group: h5py.Group, attrs: dict[str, Any] | None):
     if not attrs:
         return
@@ -54,14 +79,27 @@ def write_attrs(group: h5py.Group, attrs: dict[str, Any] | None):
 
 
 def write_geometry(group: h5py.Group, atoms):
-    overwrite_dataset(group, "atomic_numbers", np.asarray(atoms.numbers, dtype=int))
-    overwrite_dataset(group, "positions_A", np.asarray(atoms.positions, dtype=float))
-    overwrite_dataset(group, "cell_A", np.asarray(atoms.cell.array, dtype=float))
+    overwrite_dataset(group, "atomic_numbers", np.asarray(atoms.numbers, dtype=np.int32))
+
+    overwrite_dataset(
+        group,
+        "symbols",
+        as_hdf5_string_array(atoms.get_chemical_symbols()),
+    )
+
+    overwrite_dataset(group, "positions_A", np.asarray(atoms.positions, dtype=np.float64))
+    overwrite_dataset(group, "cell_A", np.asarray(atoms.cell.array, dtype=np.float64))
+
     overwrite_dataset(
         group,
         "scaled_positions",
-        np.asarray(atoms.get_scaled_positions(wrap=True), dtype=float),
+        np.asarray(atoms.get_scaled_positions(wrap=True), dtype=np.float64),
     )
+
+    group.attrs["geometry_source_convention"] = "CRYSTAL freq.out primitive cell order"
+    group.attrs["position_units"] = "Angstrom"
+    group.attrs["cell_units"] = "Angstrom"
+    group.attrs["n_atoms"] = int(len(atoms))
 
 
 def write_crystal_reference(
@@ -94,6 +132,11 @@ def write_crystal_reference(
         if atoms is not None:
             geom = cg.create_group("geometry")
             write_geometry(geom, atoms)
+
+            cg.attrs["atom_order_source"] = "CRYSTAL freq.out primitive cell"
+            cg.attrs["eigvecs_atom_order"] = "same as /geometry"
+            cg.attrs["hessian_atom_order"] = "same as /geometry"
+            cg.attrs["eigvecs_convention"] = "mass_weighted"
 
         arrays = {
             "born_charges": born_charges,
@@ -247,20 +290,11 @@ def read_crystal_ir_reference(ref_db_path: str | Path, structure: str) -> tuple[
 
 def read_crystal_modes(ref_db_path: str | Path, structure: str) -> dict:
     """
-    Read CRYSTAL Gamma-point mode data from the reference DB.
+    Read CRYSTAL Gamma-point mode data and matching reference geometry
+    from the reference DB.
 
     Expected path:
         /structures/<structure>/crystal
-
-    Required datasets:
-        frequencies_cm1
-        eigvecs_mw
-
-    Optional datasets:
-        eigvals_SI
-        imag_flags
-        hessian_mw_SI
-        hessian_cart_eV_A2
     """
     ref_db_path = Path(ref_db_path)
 
@@ -275,7 +309,9 @@ def read_crystal_modes(ref_db_path: str | Path, structure: str) -> dict:
         required = ["frequencies_cm1", "eigvecs_mw"]
         missing = [key for key in required if key not in cg]
         if missing:
-            raise KeyError(f"Missing required CRYSTAL mode datasets for {structure}: {missing}")
+            raise KeyError(
+                f"Missing required CRYSTAL mode datasets for {structure}: {missing}"
+            )
 
         out = {
             "freqs_cm": np.asarray(cg["frequencies_cm1"][()], dtype=float),
@@ -294,5 +330,172 @@ def read_crystal_modes(ref_db_path: str | Path, structure: str) -> dict:
             if key in cg:
                 out[key] = cg[key][()]
 
+        if "geometry" in cg:
+            geom = cg["geometry"]
+
+            out["geometry"] = {
+                "attrs": dict(geom.attrs),
+            }
+
+            for key in [
+                "atomic_numbers",
+                "symbols",
+                "positions_A",
+                "cell_A",
+                "scaled_positions",
+            ]:
+                if key not in geom:
+                    continue
+
+                value = geom[key][()]
+
+                if key == "symbols":
+                    value = [
+                        s.decode("utf-8") if isinstance(s, bytes) else str(s)
+                        for s in value
+                    ]
+
+                out["geometry"][key] = value
+
+            # Convenience flat keys for mode_matching.py
+            if "atomic_numbers" in out["geometry"]:
+                out["atomic_numbers"] = out["geometry"]["atomic_numbers"]
+            if "symbols" in out["geometry"]:
+                out["symbols"] = out["geometry"]["symbols"]
+            if "positions_A" in out["geometry"]:
+                out["positions_A"] = out["geometry"]["positions_A"]
+            if "cell_A" in out["geometry"]:
+                out["cell_A"] = out["geometry"]["cell_A"]
+            if "scaled_positions" in out["geometry"]:
+                out["scaled_positions"] = out["geometry"]["scaled_positions"]
+
         return out
+
+
+def read_crystal_lattice_from_freq_out(freq_out_file):
+    """
+    Parse the 'DIRECT LATTICE VECTORS CARTESIAN COMPONENTS (ANGSTROM)' block
+    from a CRYSTAL output file.
+
+    Returns
+    -------
+    cell : (3, 3) ndarray
+    """
+    with open(freq_out_file, "r") as f:
+        lines = f.readlines()
+
+    start = None
+    for i, line in enumerate(lines):
+        if "DIRECT LATTICE VECTORS CARTESIAN COMPONENTS" in line:
+            start = i
+            break
+
+    if start is None:
+        raise ValueError("Direct lattice vector block not found in freq.out")
+
+    vecs = []
+    float_re = r"([+-]?\d+\.\d+E[+-]?\d+)"
+    pat = re.compile(rf"^\s*{float_re}\s+{float_re}\s+{float_re}\s*$")
+
+    for line in lines[start + 1:]:
+        m = pat.match(line)
+        if m:
+            vecs.append([float(m.group(1)), float(m.group(2)), float(m.group(3))])
+            if len(vecs) == 3:
+                break
+
+    if len(vecs) != 3:
+        raise ValueError("Could not parse 3 direct lattice vectors from freq.out")
+
+    return np.array(vecs, dtype=float)
+
+
+def read_crystal_primitive_atoms_from_freq_out(freq_out_file):
+    """
+    Parse the 'CARTESIAN COORDINATES - PRIMITIVE CELL' block from a CRYSTAL freq.out
+    and return an ASE Atoms object in that exact printed order.
+
+    Parameters
+    ----------
+    freq_out_file : str
+    cell : (3, 3) array-like
+        Cell to assign to the returned Atoms object.
+        Use the same primitive cell as in your MACE workflow.
+
+    Returns
+    -------
+    atoms : ase.Atoms
+    """
+    with open(freq_out_file, "r") as f:
+        lines = f.readlines()
     
+    # lattice
+    cell = read_crystal_lattice_from_freq_out(freq_out_file)
+
+    start = None
+    for i, line in enumerate(lines):
+        if "CARTESIAN COORDINATES - PRIMITIVE CELL" in line:
+            start = i
+            break
+    if start is None:
+        raise ValueError("Primitive-cell coordinate block not found in freq.out")
+    atom_lines = []
+    pattern = re.compile(
+        r"^\s*\d+\s+\d+\s+([A-Za-z]+)\s+"
+        r"([+-]?\d+\.\d+E[+-]?\d+)\s+"
+        r"([+-]?\d+\.\d+E[+-]?\d+)\s+"
+        r"([+-]?\d+\.\d+E[+-]?\d+)"
+    )
+    for line in lines[start + 1:]:
+        m = pattern.match(line)
+        if m is not None:
+            sym = fix_label_case(m.group(1))
+            x = float(m.group(2))
+            y = float(m.group(3))
+            z = float(m.group(4))
+            atom_lines.append((sym, [x, y, z]))
+        elif atom_lines:
+            break
+    
+    if not atom_lines:
+        raise ValueError("No atoms parsed from primitive-cell block")
+
+    symbols = [a[0] for a in atom_lines]
+    positions = np.array([a[1] for a in atom_lines], dtype=float)
+    atoms = Atoms(symbols=symbols, positions=positions, cell=cell, pbc=True)
+    # atoms = standardize_to_primitive(atoms, no_idealize=False)
+    return atoms
+
+
+def read_crystal_hessfreq_flat(hessfreq_file: str | Path, n_atoms: int) -> np.ndarray:
+    """
+    Read CRYSTAL .hessfreq written as a flat stream of whitespace-separated
+    numbers with arbitrary line breaks.
+
+    Returns
+    -------
+    H_cart : (3N, 3N) ndarray
+        Cartesian Hessian in CRYSTAL units (typically Hartree/Bohr^2).
+    """
+    hessfreq_file = Path(hessfreq_file)
+    dim = 3 * n_atoms
+    expected = dim * dim
+
+    with open(hessfreq_file, "r") as f:
+        tokens = f.read().split()
+
+    flat = np.array(
+        [float(x.replace("D", "E").replace("d", "e")) for x in tokens],
+        dtype=float,
+    )
+
+    if flat.size != expected:
+        raise ValueError(
+            f"Expected {expected} Hessian entries for {n_atoms} atoms "
+            f"({dim}x{dim}), but found {flat.size} in {hessfreq_file}."
+        )
+
+    H_cart = flat.reshape(dim, dim)
+    H_cart = 0.5 * (H_cart + H_cart.T)
+    return H_cart
+

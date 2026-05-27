@@ -600,6 +600,7 @@ def run_optional_crystal_mode_comparison(
                 ref_db_path=ref_db_path,
                 structure=structure,
                 mace_modes=mace_modes,
+                atoms=atoms,
                 skip_first=skip_first,
                 degeneracy_tol=degeneracy_tol,
                 heatmap_outfile=heatmap_outfile,
@@ -716,9 +717,6 @@ def evaluate_model(
     dataset_split: str | None = None,
     sweep_id: str | None = None,
 ) -> dict:
-    """
-    Main callable entry point for run_master_eval.py.
-    """
     model_path = Path(model_path).resolve()
     crystal_db_path = Path(crystal_db_path).resolve()
 

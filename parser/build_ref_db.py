@@ -19,7 +19,7 @@ while not (ROOT / "util").exists():
 sys.path.insert(0, str(ROOT))
 
 from util.crystal_parser import CrystalOutputParser
-from util.mode_matching import read_crystal_hessfreq_flat, read_crystal_primitive_atoms_from_freq_out
+from util.ref_db import read_crystal_hessfreq_flat, read_crystal_primitive_atoms_from_freq_out
 from util.phonons import diagonalize_hessian
 from util.ref_db import write_crystal_reference
 

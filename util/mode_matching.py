@@ -10,33 +10,13 @@ import re
 import spglib
 import matplotlib as mpl
 from .phonons import diagonalize_hessian
-from .ref_db import read_crystal_modes
+from .ref_db import (
+    read_crystal_modes,
+    read_crystal_hessfreq_flat,
+    read_crystal_primitive_atoms_from_freq_out
+)
 
 mpl.rcParams['font.size'] = 14
-
-
-def fix_label_case(label):
-    """Convert an atomic label like FE1 -> Fe1 or SI2 -> Si."""
-    match = re.match(r"([A-Za-z]+)([0-9]*)", label)
-    if not match:
-        return label  # leave unchanged if not matching expected pattern
-    elem, idx = match.groups()
-    # Only capitalize first letter, lowercase the rest (Fe, Si, Co, etc.)
-    elem_fixed = elem.capitalize()
-    return elem_fixed
-
-
-def standardize_to_primitive(atoms, no_idealize=False):
-    cell = (atoms.cell, atoms.get_scaled_positions(), atoms.numbers)
-    prim = spglib.standardize_cell(cell, to_primitive=True, no_idealize=no_idealize)
-    if prim is None:
-        raise ValueError("spglib.standardize_cell returned None")
-    return Atoms(
-        numbers=prim[2],
-        scaled_positions=prim[1],
-        cell=prim[0],
-        pbc=True,
-    )
 
 
 def reorder_hessian(H, perm):
@@ -51,169 +31,147 @@ def reorder_hessian(H, perm):
     return 0.5 * (H_new + H_new.T)
 
 
+def reorder_mode_eigenvectors(U: np.ndarray, perm: np.ndarray) -> np.ndarray:
+    """
+    Reorder mode eigenvectors by atom permutation.
+
+    Parameters
+    ----------
+    U
+        Eigenvectors with shape (3N, Nmodes).
+    perm
+        Atom indices in the old order, arranged into the new order.
+
+    Returns
+    -------
+    U_new
+        Eigenvectors reordered to the new atom order.
+    """
+    idx = []
+    for a in perm:
+        idx.extend([3 * a, 3 * a + 1, 3 * a + 2])
+    idx = np.asarray(idx, dtype=int)
+    return np.asarray(U)[idx, :]
+
+
 def fractional_pbc_diff(a, b):
     d = np.asarray(a, dtype=float) - np.asarray(b, dtype=float)
     return d - np.round(d)
 
 
-def build_atom_permutation_by_fracpos(ref_atoms, test_atoms, tol=1e-3):
-    ref_syms = ref_atoms.get_chemical_symbols()
-    test_syms = test_atoms.get_chemical_symbols()
+def build_atom_permutation_by_fracpos(ref_atoms, test_atoms, tol=1e-2):
+    """
+    Match atoms by species and fractional coordinates, allowing a global
+    origin shift.
+
+    Returns
+    -------
+    perm_ref_in_test_order : ndarray
+        Indices into ref_atoms ordered like test_atoms.
+
+        If H_ref is in ref_atoms order, then
+
+            H_ref_test_order = reorder_hessian(H_ref, perm_ref_in_test_order)
+
+        gives the Hessian in test_atoms/MACE order.
+
+    origin_shift : ndarray
+        Fractional shift applied to test atoms before matching.
+    max_mismatch : float
+        Largest matched fractional minimum-image distance.
+    """
+    ref_syms = np.array(ref_atoms.get_chemical_symbols())
+    test_syms = np.array(test_atoms.get_chemical_symbols())
 
     ref_frac = ref_atoms.get_scaled_positions(wrap=True)
     test_frac = test_atoms.get_scaled_positions(wrap=True)
 
-    n = len(ref_atoms)
-    used = np.zeros(n, dtype=bool)
-    perm = np.full(n, -1, dtype=int)
-
-    for i in range(n):
-        candidates = []
-        for j in range(n):
-            if used[j]:
-                continue
-            if ref_syms[i] != test_syms[j]:
-                continue
-            dist = np.linalg.norm(fractional_pbc_diff(ref_frac[i], test_frac[j]))
-            if dist < tol:
-                candidates.append((j, dist))
-
-        if not candidates:
-            raise ValueError(f"No match found for atom {i} ({ref_syms[i]})")
-
-        candidates.sort(key=lambda x: x[1])
-        perm[i] = candidates[0][0]
-        used[perm[i]] = True
-
-    return perm
-
-
-def read_crystal_lattice_from_freq_out(freq_out_file):
-    """
-    Parse the 'DIRECT LATTICE VECTORS CARTESIAN COMPONENTS (ANGSTROM)' block
-    from a CRYSTAL output file.
-
-    Returns
-    -------
-    cell : (3, 3) ndarray
-    """
-    with open(freq_out_file, "r") as f:
-        lines = f.readlines()
-
-    start = None
-    for i, line in enumerate(lines):
-        if "DIRECT LATTICE VECTORS CARTESIAN COMPONENTS" in line:
-            start = i
-            break
-
-    if start is None:
-        raise ValueError("Direct lattice vector block not found in freq.out")
-
-    vecs = []
-    float_re = r"([+-]?\d+\.\d+E[+-]?\d+)"
-    pat = re.compile(rf"^\s*{float_re}\s+{float_re}\s+{float_re}\s*$")
-
-    for line in lines[start + 1:]:
-        m = pat.match(line)
-        if m:
-            vecs.append([float(m.group(1)), float(m.group(2)), float(m.group(3))])
-            if len(vecs) == 3:
-                break
-
-    if len(vecs) != 3:
-        raise ValueError("Could not parse 3 direct lattice vectors from freq.out")
-
-    return np.array(vecs, dtype=float)
-
-
-def read_crystal_primitive_atoms_from_freq_out(freq_out_file):
-    """
-    Parse the 'CARTESIAN COORDINATES - PRIMITIVE CELL' block from a CRYSTAL freq.out
-    and return an ASE Atoms object in that exact printed order.
-
-    Parameters
-    ----------
-    freq_out_file : str
-    cell : (3, 3) array-like
-        Cell to assign to the returned Atoms object.
-        Use the same primitive cell as in your MACE workflow.
-
-    Returns
-    -------
-    atoms : ase.Atoms
-    """
-    with open(freq_out_file, "r") as f:
-        lines = f.readlines()
-    
-    # lattice
-    cell = read_crystal_lattice_from_freq_out(freq_out_file)
-
-    start = None
-    for i, line in enumerate(lines):
-        if "CARTESIAN COORDINATES - PRIMITIVE CELL" in line:
-            start = i
-            break
-    if start is None:
-        raise ValueError("Primitive-cell coordinate block not found in freq.out")
-    atom_lines = []
-    pattern = re.compile(
-        r"^\s*\d+\s+\d+\s+([A-Za-z]+)\s+"
-        r"([+-]?\d+\.\d+E[+-]?\d+)\s+"
-        r"([+-]?\d+\.\d+E[+-]?\d+)\s+"
-        r"([+-]?\d+\.\d+E[+-]?\d+)"
-    )
-    for line in lines[start + 1:]:
-        m = pattern.match(line)
-        if m is not None:
-            sym = fix_label_case(m.group(1))
-            x = float(m.group(2))
-            y = float(m.group(3))
-            z = float(m.group(4))
-            atom_lines.append((sym, [x, y, z]))
-        elif atom_lines:
-            break
-    
-    if not atom_lines:
-        raise ValueError("No atoms parsed from primitive-cell block")
-
-    symbols = [a[0] for a in atom_lines]
-    positions = np.array([a[1] for a in atom_lines], dtype=float)
-    atoms = Atoms(symbols=symbols, positions=positions, cell=cell, pbc=True)
-    atoms = standardize_to_primitive(atoms, no_idealize=False)
-    return atoms
-
-
-def read_crystal_hessfreq_flat(hessfreq_file: str | Path, n_atoms: int) -> np.ndarray:
-    """
-    Read CRYSTAL .hessfreq written as a flat stream of whitespace-separated
-    numbers with arbitrary line breaks.
-
-    Returns
-    -------
-    H_cart : (3N, 3N) ndarray
-        Cartesian Hessian in CRYSTAL units (typically Hartree/Bohr^2).
-    """
-    hessfreq_file = Path(hessfreq_file)
-    dim = 3 * n_atoms
-    expected = dim * dim
-
-    with open(hessfreq_file, "r") as f:
-        tokens = f.read().split()
-
-    flat = np.array(
-        [float(x.replace("D", "E").replace("d", "e")) for x in tokens],
-        dtype=float,
-    )
-
-    if flat.size != expected:
+    if len(ref_atoms) != len(test_atoms):
         raise ValueError(
-            f"Expected {expected} Hessian entries for {n_atoms} atoms "
-            f"({dim}x{dim}), but found {flat.size} in {hessfreq_file}."
+            f"Atom count mismatch: ref={len(ref_atoms)}, test={len(test_atoms)}"
         )
 
-    H_cart = flat.reshape(dim, dim)
-    H_cart = 0.5 * (H_cart + H_cart.T)
-    return H_cart
+    if sorted(ref_syms) != sorted(test_syms):
+        raise ValueError(
+            f"Species mismatch:\nref={list(ref_syms)}\ntest={list(test_syms)}"
+        )
+
+    def score_shift(shift):
+        shifted_test_frac = (test_frac + shift) % 1.0
+
+        total_cost = 0.0
+        max_dist = 0.0
+        perm_ref_in_test_order = np.full(len(ref_atoms), -1, dtype=int)
+
+        for sym in sorted(set(ref_syms)):
+            ref_idx = np.where(ref_syms == sym)[0]
+            test_idx = np.where(test_syms == sym)[0]
+
+            cost = np.zeros((len(test_idx), len(ref_idx)), dtype=float)
+
+            for a, i_test in enumerate(test_idx):
+                for b, i_ref in enumerate(ref_idx):
+                    d = fractional_pbc_diff(
+                        shifted_test_frac[i_test],
+                        ref_frac[i_ref],
+                    )
+                    cost[a, b] = np.linalg.norm(d)
+
+            row_ind, col_ind = linear_sum_assignment(cost)
+            matched = cost[row_ind, col_ind]
+
+            total_cost += float(np.sum(matched))
+            max_dist = max(max_dist, float(np.max(matched)))
+
+            for row, col in zip(row_ind, col_ind):
+                i_test = test_idx[row]
+                i_ref = ref_idx[col]
+                perm_ref_in_test_order[i_test] = i_ref
+
+        return total_cost, max_dist, perm_ref_in_test_order
+
+    # Candidate origin shifts from same-species atom pairs.
+    candidate_shifts = []
+
+    for i_ref, sym_ref in enumerate(ref_syms):
+        for i_test, sym_test in enumerate(test_syms):
+            if sym_ref != sym_test:
+                continue
+
+            shift = ref_frac[i_ref] - test_frac[i_test]
+            shift = shift - np.floor(shift)
+            candidate_shifts.append(shift)
+
+    # Also test no shift explicitly.
+    candidate_shifts.append(np.zeros(3))
+
+    best = None
+
+    for shift in candidate_shifts:
+        total_cost, max_dist, perm = score_shift(shift)
+
+        if best is None or total_cost < best[0]:
+            best = (total_cost, max_dist, perm, shift)
+
+    total_cost, max_dist, perm_ref_in_test_order, origin_shift = best
+
+    if np.any(perm_ref_in_test_order < 0):
+        raise ValueError("Internal atom matching error: incomplete permutation.")
+
+    if max_dist > tol:
+        raise ValueError(
+            "Atom matching failed after origin-shift search. "
+            f"Best shift={origin_shift}, max fractional mismatch={max_dist:.6g}, "
+            f"tol={tol}"
+        )
+
+    print("Atom matching successful.")
+    print(f"  origin shift applied to test atoms: {origin_shift}")
+    print(f"  total fractional mismatch        : {total_cost:.6g}")
+    print(f"  max fractional mismatch          : {max_dist:.6g}")
+    print(f"  ref indices in test order        : {perm_ref_in_test_order}")
+
+    return perm_ref_in_test_order, origin_shift, max_dist
 
 
 # ============================================================
@@ -528,48 +486,29 @@ def print_mode_match_summary(matches):
         )
 
 
-def run_mode_comparison(
-    atoms: Atoms,
+def compare_mode_sets(
+    *,
+    freqs_crys: np.ndarray,
+    evecs_crys: np.ndarray,
     mace_modes: dict,
-    crystal_hess_path: str | Path,
-    freq_out_path: str | Path,
-    crystal_hessian_units: str = "hartree/bohr^2",
     skip_first: int = 3,
     degeneracy_tol: float = 1.0,
     heatmap_outfile: str | Path | None = None,
     title: str = "CRYSTAL vs MACE mode overlap",
+    crystal_extra: dict | None = None,
+    source: str = "unknown",
 ):
-    """
-    Full comparison workflow:
-    - read CRYSTAL Hessian
-    - diagonalize with the same convention as MACE
-    - compute overlap matrix
-    - match modes
-    - optionally save heatmap
-    """
-    n_atoms = len(atoms)
-    masses_amu = atoms.get_masses()
+    freqs_crys = np.asarray(freqs_crys, dtype=float)
+    evecs_crys = np.asarray(evecs_crys, dtype=float)
 
-    H_crys = read_crystal_hessfreq_flat(crystal_hess_path, n_atoms=n_atoms)
+    freqs_mace = np.asarray(mace_modes["freqs_cm"], dtype=float)
+    evecs_mace = np.asarray(mace_modes["eigvecs_mw"], dtype=float)
 
-    crystal_atoms = read_crystal_primitive_atoms_from_freq_out(freq_out_file=freq_out_path)
-
-    perm = build_atom_permutation_by_fracpos(
-        ref_atoms=atoms,
-        test_atoms=crystal_atoms,
-        tol=1e-1,
-    )
-
-    H_crys = reorder_hessian(H_crys, perm)
-
-    Hmw_crys, eigvals_crys, evecs_crys, freqs_crys, imag_crys = diagonalize_hessian(
-        H_crys,
-        masses_amu,
-        hessian_units=crystal_hessian_units,
-    )
-
-    freqs_mace = mace_modes["freqs_cm"]
-    evecs_mace = mace_modes["eigvecs_mw"]
+    if evecs_crys.shape != evecs_mace.shape:
+        raise ValueError(
+            f"Mode eigenvector shape mismatch: "
+            f"CRYSTAL {evecs_crys.shape}, MACE {evecs_mace.shape}."
+        )
 
     overlap_full = compute_overlap_matrix(evecs_crys, evecs_mace, absolute=True)
     overlap_cut = overlap_full[skip_first:, skip_first:]
@@ -582,9 +521,6 @@ def run_mode_comparison(
         skip_first=skip_first,
     )
 
-    ref_groups = group_degenerate_modes(freqs_crys[skip_first:], tol_cm1=degeneracy_tol)
-    test_groups = group_degenerate_modes(freqs_mace[skip_first:], tol_cm1=degeneracy_tol)
-
     ref_groups, test_groups, group_matches, group_overlap_matrix = match_degenerate_groups(
         freqs_ref=freqs_crys,
         U_ref=evecs_crys,
@@ -595,9 +531,8 @@ def run_mode_comparison(
         freq_weight=0.02,
     )
 
-    subgroup_results = group_matches
-
     group_heatmap_outfile = None
+
     if heatmap_outfile is not None:
         heatmap_outfile = Path(heatmap_outfile)
 
@@ -625,34 +560,94 @@ def run_mode_comparison(
             title=title + " (degenerate groups)",
         )
 
-
     return {
-        "crystal": {
-            "H_cart": H_crys,
-            "H_mw": Hmw_crys,
-            "eigvals_SI": eigvals_crys,
-            "eigvecs_mw": evecs_crys,
-            "freqs_cm": freqs_crys,
-            "imag_flags": imag_crys,
-        },
+        "crystal": {} if crystal_extra is None else crystal_extra,
         "mace": mace_modes,
         "overlap_full": overlap_full,
         "overlap_cut": overlap_cut,
         "matches": matches,
-        "subgroups": subgroup_results,
+        "subgroups": group_matches,
         "ref_groups": ref_groups,
         "test_groups": test_groups,
         "group_overlap_matrix": group_overlap_matrix,
         "group_heatmap_outfile": group_heatmap_outfile,
         "skip_first": skip_first,
         "degeneracy_tol": degeneracy_tol,
+        "source": source,
     }
+
+
+def run_mode_comparison(
+    atoms: Atoms,
+    mace_modes: dict,
+    crystal_hess_path: str | Path,
+    freq_out_path: str | Path,
+    crystal_hessian_units: str = "hartree/bohr^2",
+    skip_first: int = 3,
+    degeneracy_tol: float = 1.0,
+    heatmap_outfile: str | Path | None = None,
+    title: str = "CRYSTAL vs MACE mode overlap",
+):
+    """
+    Old Wokflow will be deleted at some point!!!
+    Full comparison workflow:
+    - read CRYSTAL Hessian
+    - diagonalize with the same convention as MACE
+    - compute overlap matrix
+    - match modes
+    - optionally save heatmap
+    """
+    n_atoms = len(atoms)
+    masses_amu = atoms.get_masses()
+
+    H_crys = read_crystal_hessfreq_flat(crystal_hess_path, n_atoms=n_atoms)
+
+    crystal_atoms = read_crystal_primitive_atoms_from_freq_out(freq_out_file=freq_out_path)
+
+    perm_ref_in_test_order, origin_shift, max_mismatch = build_atom_permutation_by_fracpos(
+        ref_atoms=crystal_atoms,
+        test_atoms=atoms,
+        tol=1e-2,
+    )
+
+    # H_crys is originally in CRYSTAL/ref atom order.
+    # Reorder it into MACE/test atom order before diagonalization.
+    H_crys = reorder_hessian(H_crys, perm_ref_in_test_order)
+
+    Hmw_crys, eigvals_crys, evecs_crys, freqs_crys, imag_crys = diagonalize_hessian(
+        H_crys,
+        masses_amu,
+        hessian_units=crystal_hessian_units,
+    )
+
+    return compare_mode_sets(
+        freqs_crys=freqs_crys,
+        evecs_crys=evecs_crys,
+        mace_modes=mace_modes,
+        skip_first=skip_first,
+        degeneracy_tol=degeneracy_tol,
+        heatmap_outfile=heatmap_outfile,
+        title=title,
+        crystal_extra={
+            "H_cart": H_crys,
+            "H_mw": Hmw_crys,
+            "eigvals_SI": eigvals_crys,
+            "eigvecs_mw": evecs_crys,
+            "freqs_cm": freqs_crys,
+            "imag_flags": imag_crys,
+            "atom_permutation": perm_ref_in_test_order,
+            "origin_shift": origin_shift,
+            "max_atom_mismatch": max_mismatch,
+        },
+        source="hessfreq",
+    )
 
 
 def run_mode_comparison_from_ref_db(
     ref_db_path: str | Path,
     structure: str,
     mace_modes: dict,
+    atoms: Atoms | None = None,
     skip_first: int = 3,
     degeneracy_tol: float = 1.0,
     heatmap_outfile: str | Path | None = None,
@@ -673,81 +668,62 @@ def run_mode_comparison_from_ref_db(
     freqs_crys = np.asarray(crystal["freqs_cm"], dtype=float)
     evecs_crys = np.asarray(crystal["eigvecs_mw"], dtype=float)
 
-    freqs_mace = np.asarray(mace_modes["freqs_cm"], dtype=float)
-    evecs_mace = np.asarray(mace_modes["eigvecs_mw"], dtype=float)
+    permutation_info = {}
 
-    if evecs_crys.shape != evecs_mace.shape:
-        raise ValueError(
-            f"Mode eigenvector shape mismatch for {structure}: "
-            f"CRYSTAL {evecs_crys.shape}, MACE {evecs_mace.shape}. "
-            "This usually means atom count/order or primitive-cell convention differs."
-        )
+    if atoms is not None:
+        crystal_atoms = None
 
-    overlap_full = compute_overlap_matrix(evecs_crys, evecs_mace, absolute=True)
-    overlap_cut = overlap_full[skip_first:, skip_first:]
+        if all(k in crystal for k in ("atomic_numbers", "cell_A", "scaled_positions")):
+            crystal_atoms = Atoms(
+                numbers=np.asarray(crystal["atomic_numbers"], dtype=int),
+                cell=np.asarray(crystal["cell_A"], dtype=float),
+                scaled_positions=np.asarray(
+                    crystal["scaled_positions"],
+                    dtype=float,
+                ),
+                pbc=True,
+            )
+        else:
+            print(
+                "WARNING: ref_db mode comparison could not apply atom permutation "
+                "because read_crystal_modes() did not return "
+                "atomic_numbers/cell_A/scaled_positions."
+            )
 
-    matches = match_modes_hungarian(
-        freqs_ref=freqs_crys,
-        U_ref=evecs_crys,
-        freqs_test=freqs_mace,
-        U_test=evecs_mace,
-        skip_first=skip_first,
-    )
+        if crystal_atoms is not None:
+            perm_ref_in_test_order, origin_shift, max_mismatch = build_atom_permutation_by_fracpos(
+                ref_atoms=crystal_atoms,
+                test_atoms=atoms,
+                tol=1e-2,
+            )
 
-    ref_groups, test_groups, group_matches, group_overlap_matrix = match_degenerate_groups(
-        freqs_ref=freqs_crys,
-        U_ref=evecs_crys,
-        freqs_test=freqs_mace,
-        U_test=evecs_mace,
+            evecs_crys = reorder_mode_eigenvectors(evecs_crys, perm_ref_in_test_order)
+
+            permutation_info = {
+                "atom_permutation": perm_ref_in_test_order,
+                "origin_shift": origin_shift,
+                "max_atom_mismatch": max_mismatch,
+            }
+        else:
+            print(
+                "WARNING: ref_db mode comparison could not apply atom permutation "
+                "because read_crystal_modes() did not return atoms/symbols/cell/scaled_positions."
+            )
+
+    if title is None:
+        title = f"{structure}: CRYSTAL DB vs MACE mode overlap"
+
+    crystal_extra = dict(crystal)
+    crystal_extra.update(permutation_info)
+
+    return compare_mode_sets(
+        freqs_crys=freqs_crys,
+        evecs_crys=evecs_crys,
+        mace_modes=mace_modes,
         skip_first=skip_first,
         degeneracy_tol=degeneracy_tol,
-        freq_weight=0.02,
+        heatmap_outfile=heatmap_outfile,
+        title=title,
+        crystal_extra=crystal_extra,
+        source="ref_db",
     )
-
-    group_heatmap_outfile = None
-
-    if heatmap_outfile is not None:
-        heatmap_outfile = Path(heatmap_outfile)
-
-        if title is None:
-            title = f"{structure}: CRYSTAL DB vs MACE mode overlap"
-
-        plot_mode_overlap_heatmap(
-            overlap_cut,
-            freqs_ref=freqs_crys,
-            freqs_test=freqs_mace,
-            skip_first=skip_first,
-            outfile=heatmap_outfile,
-            title=title,
-        )
-
-        group_heatmap_outfile = heatmap_outfile.with_name(
-            heatmap_outfile.stem + "_groups" + heatmap_outfile.suffix
-        )
-
-        plot_group_overlap_heatmap(
-            group_overlap_matrix=group_overlap_matrix,
-            ref_groups=ref_groups,
-            test_groups=test_groups,
-            group_matches=group_matches,
-            freqs_ref=freqs_crys,
-            freqs_test=freqs_mace,
-            outfile=group_heatmap_outfile,
-            title=title + " (degenerate groups)",
-        )
-
-    return {
-        "crystal": crystal,
-        "mace": mace_modes,
-        "overlap_full": overlap_full,
-        "overlap_cut": overlap_cut,
-        "matches": matches,
-        "subgroups": group_matches,
-        "ref_groups": ref_groups,
-        "test_groups": test_groups,
-        "group_overlap_matrix": group_overlap_matrix,
-        "group_heatmap_outfile": group_heatmap_outfile,
-        "skip_first": skip_first,
-        "degeneracy_tol": degeneracy_tol,
-        "source": "ref_db",
-    }
