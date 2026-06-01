@@ -19,6 +19,8 @@ eval_settings:
   crystal_hessian_units: hartree/bohr^2
   write_ref_db: true
   ref_db_path: data/ref_db.h5
+  write_ref_db: true
+  ref_db_path: data/ref_db.h5
 
 base_config:
   train_file: train_Al2O3.xyz

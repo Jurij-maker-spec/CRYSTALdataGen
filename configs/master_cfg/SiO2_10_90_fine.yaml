@@ -21,6 +21,9 @@ eval_settings:
   phonopy_plugin: null
   write_ref_db: true
   ref_db_path: /home/jha/jha/python_scripts/CRYSTALdataGen/data/ref_db.h5
+  use_ref_db_cache: true
+  force_reeval: false
+  plot_only: false
   
 
 base_config:

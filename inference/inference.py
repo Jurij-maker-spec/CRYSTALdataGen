@@ -49,6 +49,7 @@ PYTHON_SCRIPTS_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PYTHON_SCRIPTS_ROOT))
 
 from util.plotting import plot_ir_spectrum as ir_spec_plotter
+from util.plotting import plot_ir_spectrum_with_frequency_correlation
 from util.ir import (
     asr_correct_bec,
     mass_unweight_eigenvectors,
@@ -66,7 +67,12 @@ from util.mode_matching import (
     print_mode_match_summary,
     print_group_match_summary,
 )
-from util.ref_db import write_model_evaluation
+from util.ref_db import (
+    write_model_evaluation,
+    model_evaluation_exists,
+    read_model_evaluation,
+    read_crystal_modes,
+)
 
 # ------------------------------------------------------------------
 # defaults
@@ -648,6 +654,191 @@ def run_crystal_mode_comparison(
             summary["error"] = f"ref_db failed: {exc}"
 
 
+# ------------------------------------------------------------------
+# plot rebuild helper
+# ------------------------------------------------------------------
+
+def build_crystal_summary_from_plot(
+    freqs_cm,
+    intensities,
+    nu_grid,
+    ir_spec,
+    structure: str,
+    crystal_db_path: Path,
+    outfile: Path,
+) -> dict:
+    crystal_summary = {
+        "has_crystal_reference": False,
+        "crystal_freqs_cm": None,
+        "crystal_intensities_rel": None,
+        "crystal_kde_x": None,
+        "crystal_kde_y": None,
+        "spectrum_rel_l2": None,
+    }
+
+    try:
+        f_crys, I_crys_rel, x_ref, kde_ref = ir_spec_plotter(
+            freqs_cm=freqs_cm,
+            intensities=intensities,
+            nu_grid=nu_grid,
+            ir_spec=ir_spec,
+            structure=structure,
+            crystal_db_path=crystal_db_path,
+            outfile=outfile,
+        )
+
+        crystal_summary["has_crystal_reference"] = True
+        crystal_summary["crystal_freqs_cm"] = np.asarray(f_crys, dtype=float)
+        crystal_summary["crystal_intensities_rel"] = np.asarray(I_crys_rel, dtype=float)
+        crystal_summary["crystal_kde_x"] = np.asarray(x_ref, dtype=float)
+        crystal_summary["crystal_kde_y"] = np.asarray(kde_ref, dtype=float)
+        crystal_summary["spectrum_rel_l2"] = spectrum_distance_l2(
+            x_ref,
+            kde_ref,
+            nu_grid,
+            ir_spec,
+        )
+
+    except Exception as exc:
+        print(f"----> Cached CRYSTAL comparison plotting failed for {structure}: {exc}")
+
+    return crystal_summary
+
+
+def rebuild_summary_and_plots_from_cached_eval(
+    *,
+    cached: dict,
+    model_path: Path,
+    structure: str,
+    cif_path: Path,
+    output_dir: Path,
+    crystal_db_path: Path,
+    run_id: str,
+    dataset_split: str,
+    sweep_id: str,
+    device: str,
+    default_dtype: str,
+    frechet: bool,
+    fmax: float,
+    compare_crystal_modes: bool,
+    mode_skip_first: int,
+    mode_degeneracy_tol: float,
+) -> dict:
+    ensure_dir(output_dir)
+
+    ir_plot_path = output_dir / f"{structure}_ir_comparison.png"
+    ir_corr_plot_path = output_dir / f"{structure}_ir_corr_comp.png"
+    summary_json_path = output_dir / f"{structure}_eval_summary.json"
+    npz_path = output_dir / f"{structure}_eval_arrays.npz"
+
+    freqs_cm = np.asarray(cached["frequencies_cm1"], dtype=float)
+    imag_flags = np.asarray(cached["imag_flags"], dtype=bool)
+    intensities = np.asarray(cached["intensities"], dtype=float)
+    z_mode = np.asarray(cached["z_mode"], dtype=float)
+    nu_grid = np.asarray(cached["nu_grid_cm1"], dtype=float)
+    ir_spec = np.asarray(cached["ir_spec"], dtype=float)
+
+    crystal_summary = build_crystal_summary_from_plot(
+        freqs_cm=freqs_cm,
+        intensities=intensities,
+        nu_grid=nu_grid,
+        ir_spec=ir_spec,
+        structure=structure,
+        crystal_db_path=crystal_db_path,
+        outfile=ir_plot_path,
+    )
+
+    crystal_freqs_full = None
+    try:
+        crystal_modes = read_crystal_modes(crystal_db_path, structure)
+        crystal_freqs_full = np.asarray(crystal_modes["freqs_cm"], dtype=float)
+    except Exception as exc:
+        print(f"----> Could not load full CRYSTAL frequencies for correlation plot: {exc}")
+
+    crystal_freqs_full = None
+    try:
+        crystal_modes = read_crystal_modes(crystal_db_path, structure)
+        crystal_freqs_full = np.asarray(crystal_modes["freqs_cm"], dtype=float)
+    except Exception as exc:
+        print(f"----> Could not load full CRYSTAL frequencies for correlation plot: {exc}")
+
+    plot_ir_spectrum_with_frequency_correlation(
+        freqs_cm=freqs_cm,
+        intensities=intensities,
+        nu_grid=nu_grid,
+        ir_spec=ir_spec,
+        structure=structure,
+        crystal_freqs_cm=crystal_freqs_full,
+        crystal_db_path=crystal_db_path,
+        outfile=ir_corr_plot_path,
+    )
+
+    active_freqs, active_intensities, active_mask = find_ir_active_modes(
+        freqs_cm=freqs_cm,
+        imag_flags=imag_flags,
+        intensities=intensities,
+    )
+
+    ranking_metrics = dict(cached.get("ranking_metrics", {}))
+
+    summary = {
+        "structure": structure,
+        "model_path": model_path,
+        "cif_path": cif_path,
+        "output_dir": output_dir,
+        "device": device,
+        "default_dtype": default_dtype,
+        "frechet": frechet,
+        "fmax": fmax,
+        "compare_crystal_modes": compare_crystal_modes,
+        "mode_skip_first": mode_skip_first,
+        "mode_degeneracy_tol": mode_degeneracy_tol,
+        "loaded_from_ref_db_cache": True,
+        "n_modes_total": int(len(freqs_cm)),
+        "n_imag_modes": int(np.sum(imag_flags)),
+        "n_physical_modes": int(np.sum((~imag_flags) & (freqs_cm > 1e-6))),
+        "n_ir_active_modes": int(np.sum(active_mask)),
+        "crystal_comparison": crystal_summary,
+        "ranking_metrics": ranking_metrics,
+        "artifacts": {
+            "ir_plot": ir_plot_path,
+            "ir_corr_plot": ir_corr_plot_path,
+            "summary_json": summary_json_path,
+            "arrays_npz": npz_path,
+        },
+        "ref_db": {
+            "cache_status": "loaded",
+            "run_id": run_id,
+            "dataset_split": dataset_split,
+            "sweep_id": sweep_id,
+        },
+    }
+
+    np.savez(
+        npz_path,
+        freqs_cm=freqs_cm,
+        imag_flags=imag_flags,
+        intensities=intensities,
+        z_mode=z_mode,
+        nu_grid=nu_grid,
+        ir_spec=ir_spec,
+        active_freqs_cm=np.asarray(active_freqs, dtype=float),
+        active_intensities=np.asarray(active_intensities, dtype=float),
+        crystal_freqs_cm=np.asarray(
+            [] if crystal_freqs_full is None else crystal_freqs_full,
+            dtype=float,
+        ),
+    )
+
+    with open(summary_json_path, "w", encoding="utf-8") as f:
+        json.dump(to_serializable(summary), f, indent=2)
+
+    return summary
+
+# ------------------------------------------------------------------
+# Evaluate model
+# ------------------------------------------------------------------
+
 def evaluate_model(
     model_path: str | Path,
     structure: str,
@@ -665,15 +856,16 @@ def evaluate_model(
     crystal_hessian_units: str = DEFAULT_CRYSTAL_HESSIAN_UNITS,
     mode_skip_first: int = 3,
     mode_degeneracy_tol: float = 1.0,
-    # reserved plugin system
     run_phonopy=False,
     phonopy_plugin=None,
-    # reference DB write-back
     write_ref_db: bool = False,
     ref_db_path: str | Path | None = None,
     run_id: str | None = None,
     dataset_split: str | None = None,
     sweep_id: str | None = None,
+    use_ref_db_cache: bool = True,
+    force_reeval: bool = False,
+    plot_only: bool = False,
 ) -> dict:
     model_path = Path(model_path).resolve()
     crystal_db_path = Path(crystal_db_path).resolve()
@@ -687,12 +879,72 @@ def evaluate_model(
     output_dir = Path(output_dir).resolve()
     ensure_dir(output_dir)
 
+    if run_id is None:
+        run_id_final = model_path.stem
+    else:
+        run_id_final = str(run_id)
+
+    dataset_split_final = dataset_split or "ungrouped"
+    sweep_id_final = sweep_id or "manual"
+
+    cache_db_path = Path(ref_db_path).resolve() if ref_db_path is not None else crystal_db_path   
+
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found: {model_path}")
     if not cif_path.exists():
         raise FileNotFoundError(f"CIF not found: {cif_path}")
     if not crystal_db_path.exists():
         raise FileNotFoundError(f"CRYSTAL DB not found: {crystal_db_path}")
+
+    if use_ref_db_cache and not force_reeval:
+        if model_evaluation_exists(
+            ref_db_path=cache_db_path,
+            structure=structure,
+            run_id=run_id_final,
+            dataset_split=dataset_split_final,
+            sweep_id=sweep_id_final,
+        ):
+            print(
+                "[CACHE] Loading existing MACE evaluation from DB:\n"
+                f"  structure     : {structure}\n"
+                f"  dataset_split : {dataset_split_final}\n"
+                f"  sweep_id      : {sweep_id_final}\n"
+                f"  run_id        : {run_id_final}"
+            )
+
+            cached = read_model_evaluation(
+                ref_db_path=cache_db_path,
+                structure=structure,
+                run_id=run_id_final,
+                dataset_split=dataset_split_final,
+                sweep_id=sweep_id_final,
+            )
+
+            return rebuild_summary_and_plots_from_cached_eval(
+                cached=cached,
+                model_path=model_path,
+                structure=structure,
+                cif_path=cif_path,
+                output_dir=output_dir,
+                crystal_db_path=crystal_db_path,
+                run_id=run_id_final,
+                dataset_split=dataset_split_final,
+                sweep_id=sweep_id_final,
+                device=device,
+                default_dtype=default_dtype,
+                frechet=frechet,
+                fmax=fmax,
+                compare_crystal_modes=compare_crystal_modes,
+                mode_skip_first=mode_skip_first,
+                mode_degeneracy_tol=mode_degeneracy_tol,
+            )
+
+    if plot_only:
+        raise RuntimeError(
+            "plot_only=True, but no cached evaluation was found in the DB for "
+            f"{structure}/{dataset_split_final}/{sweep_id_final}/{run_id_final}"
+        )
+
 
     print("\n##                  Model eval                  ##")
     print("Structure:", structure)
@@ -702,6 +954,7 @@ def evaluate_model(
 
     traj_path = output_dir / f"{structure}_opt.traj"
     ir_plot_path = output_dir / f"{structure}_ir_comparison.png"
+    ir_corr_plot_path = output_dir / f"{structure}_ir_corr_comp.png"
     summary_json_path = output_dir / f"{structure}_eval_summary.json"
     npz_path = output_dir / f"{structure}_eval_arrays.npz"
 
@@ -780,6 +1033,16 @@ def evaluate_model(
         structure=structure,
         crystal_db_path=crystal_db_path,
         outfile=ir_plot_path,
+    )
+
+    plot_ir_spectrum_with_frequency_correlation(
+        freqs_cm=freqs_cm,
+        intensities=intensities,
+        nu_grid=nu_grid,
+        ir_spec=ir_spec,
+        structure=structure,
+        crystal_freqs_cm=None,
+        outfile=ir_corr_plot_path,
     )
 
     active_freqs, active_intensities, active_mask = find_ir_active_modes(
@@ -934,11 +1197,6 @@ def evaluate_model(
             summary["ref_db"]["write_status"] = "failed"
             summary["ref_db"]["error"] = "write_ref_db=True but ref_db_path=None"
         else:
-            if run_id is None:
-                run_id_final = model_path.stem
-            else:
-                run_id_final = str(run_id)
-
             summary["ref_db"]["run_id"] = run_id_final
 
             try:
@@ -946,8 +1204,8 @@ def evaluate_model(
                     ref_db_path=ref_db_path,
                     structure=structure,
                     run_id=run_id_final,
-                    dataset_split=dataset_split or "ungrouped",
-                    sweep_id=sweep_id or "manual",
+                    dataset_split=dataset_split_final,
+                    sweep_id=sweep_id_final,
                     atoms=atoms,
                     bec_raw=bec,
                     bec_asr=bec_asr,

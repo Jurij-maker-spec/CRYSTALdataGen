@@ -9,6 +9,10 @@ import h5py
 import spglib
 import numpy as np
 
+#################################################################
+# Helpers
+#################################################################
+
 def fix_label_case(label):
     """Convert an atomic label like FE1 -> Fe1 or SI2 -> Si."""
     match = re.match(r"([A-Za-z]+)([0-9]*)", label)
@@ -68,6 +72,66 @@ def standardize_to_primitive(atoms, no_idealize=False):
         pbc=True,
     )
 
+
+def model_evaluation_group_path(
+    structure: str,
+    dataset_split: str,
+    sweep_id: str,
+    run_id: str,
+) -> str:
+    return (
+        f"structures/{structure}/evaluations/"
+        f"{dataset_split}/{sweep_id}/{run_id}"
+    )
+
+
+def model_evaluation_exists(
+    ref_db_path: str | Path,
+    structure: str,
+    run_id: str,
+    dataset_split: str = "ungrouped",
+    sweep_id: str = "manual",
+    required_datasets: list[str] | None = None,
+) -> bool:
+    if required_datasets is None:
+        required_datasets = [
+            "frequencies_cm1",
+            "imag_flags",
+            "intensities",
+            "z_mode",
+            "ir_spectrum/nu_grid_cm1",
+            "ir_spectrum/intensity_relative",
+        ]
+
+    path = model_evaluation_group_path(
+        structure=structure,
+        dataset_split=dataset_split,
+        sweep_id=sweep_id,
+        run_id=run_id,
+    )
+
+    ref_db_path = Path(ref_db_path)
+
+    if not ref_db_path.exists():
+        return False
+
+    with h5py.File(ref_db_path, "r") as h5:
+        if path not in h5:
+            return False
+
+        grp = h5[path]
+
+        for name in required_datasets:
+            if name not in grp:
+                return False
+
+        return True
+
+
+
+#################################################################
+# Writers
+#################################################################
 
 def write_attrs(group: h5py.Group, attrs: dict[str, Any] | None):
     if not attrs:
@@ -419,6 +483,11 @@ def write_ir_matching(group: h5py.Group, ir_matching: dict[str, Any] | None):
     write_scalar_summary_group(ig, "summaries", summary)
 
 
+
+#################################################################
+# Readers
+#################################################################
+
 def read_crystal_reference(ref_db_path: str | Path, structure: str) -> dict:
     ref_db_path = Path(ref_db_path)
 
@@ -679,3 +748,73 @@ def read_crystal_hessfreq_flat(hessfreq_file: str | Path, n_atoms: int) -> np.nd
     H_cart = 0.5 * (H_cart + H_cart.T)
     return H_cart
 
+
+def _read_attrs_if_exists(group: h5py.Group, name: str) -> dict[str, Any]:
+    if name not in group:
+        return {}
+    return dict(group[name].attrs)
+
+
+def read_model_evaluation(
+    ref_db_path: str | Path,
+    structure: str,
+    run_id: str,
+    dataset_split: str = "ungrouped",
+    sweep_id: str = "manual",
+) -> dict[str, Any]:
+    path = model_evaluation_group_path(
+        structure=structure,
+        dataset_split=dataset_split,
+        sweep_id=sweep_id,
+        run_id=run_id,
+    )
+
+    with h5py.File(ref_db_path, "r") as h5:
+        if path not in h5:
+            raise KeyError(f"Missing model evaluation group: {path}")
+
+        eg = h5[path]
+
+        out: dict[str, Any] = {
+            "attrs": dict(eg.attrs),
+            "frequencies_cm1": np.asarray(eg["frequencies_cm1"][()], dtype=float),
+            "imag_flags": np.asarray(eg["imag_flags"][()], dtype=bool),
+            "intensities": np.asarray(eg["intensities"][()], dtype=float),
+            "z_mode": np.asarray(eg["z_mode"][()], dtype=float),
+            "nu_grid_cm1": np.asarray(
+                eg["ir_spectrum/nu_grid_cm1"][()],
+                dtype=float,
+            ),
+            "ir_spec": np.asarray(
+                eg["ir_spectrum/intensity_relative"][()],
+                dtype=float,
+            ),
+            "ranking_metrics": _read_attrs_if_exists(eg, "ranking_metrics"),
+        }
+
+        optional_arrays = [
+            "bec_raw",
+            "bec_asr",
+            "eigvals_SI",
+            "eigvecs_mw",
+        ]
+
+        for key in optional_arrays:
+            if key in eg:
+                out[key] = np.asarray(eg[key][()])
+
+        if "geometry_optimized" in eg:
+            geom = eg["geometry_optimized"]
+            out["geometry_optimized"] = {
+                "atomic_numbers": np.asarray(geom["atomic_numbers"][()], dtype=int),
+                "positions_A": np.asarray(geom["positions_A"][()], dtype=float),
+                "cell_A": np.asarray(geom["cell_A"][()], dtype=float),
+                "scaled_positions": np.asarray(
+                    geom["scaled_positions"][()],
+                    dtype=float,
+                ),
+            }
+
+        return out
+    
+    

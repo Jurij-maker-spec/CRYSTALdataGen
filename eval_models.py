@@ -140,6 +140,24 @@ def parse_args() -> argparse.Namespace:
         help="Evaluate runs even if eval summary and arrays already exist.",
     )
 
+    parser.add_argument(
+        "--force-reeval",
+        action="store_true",
+        help="Ignore cached DB evaluation and recompute MACE inference.",
+    )
+
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Only regenerate plots/summaries from DB cache. Do not run MACE.",
+    )
+
+    parser.add_argument(
+        "--no-db-cache",
+        action="store_true",
+        help="Disable DB cache lookup before evaluation.",
+    )
+
     return parser.parse_args()
 
 
@@ -169,6 +187,9 @@ def main() -> None:
     )
 
     eval_settings = deepcopy(cfg["eval_settings"])
+    eval_settings["force_reeval"] = bool(args.force_reeval)
+    eval_settings["plot_only"] = bool(args.plot_only)
+    eval_settings["use_ref_db_cache"] = not bool(args.no_db_cache)
     dry_run = args.dry_run or cfg.get("dry_run", False)
 
     sweep_root = resolve_existing_sweep_dir(args.sweep_dir)
@@ -190,4 +211,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    '''default:
+        use DB if available, otherwise compute
+
+        force_reeval: true:
+            ignore DB, recompute, overwrite DB entry
+
+        plot_only: true:
+            require DB cache, regenerate plots only
+
+        use_ref_db_cache: false:
+            always go through normal evaluation path unless plot_only is true'''
     main()
