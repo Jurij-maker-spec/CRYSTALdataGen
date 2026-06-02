@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from .ref_db import read_crystal_ir_reference
 
+mpl.style.use('/home/jha/jha/python_scripts/CRYSTALdataGen/util/style.mplstyle')
+
 CMAP = mpl.colormaps['viridis']
 
 def gaussian_profile(x, x0=0, intensity=1, fwhm=400):
@@ -174,7 +176,7 @@ def plot_ir_spectrum_with_frequency_correlation(
         ncols=2,
         width_ratios=[2.5, 1.3],
         height_ratios=[1, 1],
-        wspace=0.05,
+        wspace=0.01,
         hspace=0.08,
     )
 
@@ -219,6 +221,7 @@ def plot_ir_spectrum_with_frequency_correlation(
     ax0.plot(
         nu_grid,
         ir_spec,
+        lw = 1.5,
         label=f"MACELES {structure}",
         color=c[1],
     )
@@ -241,6 +244,7 @@ def plot_ir_spectrum_with_frequency_correlation(
         ax1.plot(
             x_ref,
             kde_ref,
+            lw = 1.5,
             label="CRYSTAL",
             color=c[0],
         )
@@ -248,7 +252,7 @@ def plot_ir_spectrum_with_frequency_correlation(
     ax1.legend()
     ax1.set_xlabel(r"Wavenumber in cm$^{-1}$")
     
-    fig.supylabel("Relative IR intensity", x=0.078, size=14)
+    fig.supylabel("Relative IR intensity", x=0.074)
     # ------------------------------------------------------------
     # Right axis: frequency-correlation scatter
     # ------------------------------------------------------------
@@ -319,16 +323,17 @@ def plot_ir_spectrum_with_frequency_correlation(
         )
 
     ax_corr.legend()
-    ax_corr.set_xlabel("CRYSTAL frequency in cm$^{-1}$")
-    ax_corr.set_ylabel("MACELES frequency in cm$^{-1}$")
+    ax_corr.set_xlabel("CRYSTAL modes in cm$^{-1}$")
+    ax_corr.set_ylabel("MACELES modes in cm$^{-1}$")
     ticks = ax_corr.get_xticks()
     # print(ticks)
     ax_corr.set_yticks(ticks[1:-1])
     ax_corr.yaxis.set_label_position("right")
     ax_corr.tick_params(axis='y', left=False, right=True, labelleft=False, labelright=True)
     # ax_corr.grid()
-
     fig.savefig(outfile, dpi=200, bbox_inches="tight")
+    outfile = outfile.with_suffix('.pdf')
+    fig.savefig(outfile, bbox_inches="tight")
     plt.close(fig)
 
     return {

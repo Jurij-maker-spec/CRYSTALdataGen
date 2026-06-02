@@ -15,8 +15,7 @@ from .ref_db import (
     read_crystal_hessfreq_flat,
     read_crystal_primitive_atoms_from_freq_out
 )
-
-mpl.rcParams['font.size'] = 14
+mpl.style.use('/home/jha/jha/python_scripts/CRYSTALdataGen/util/style.mplstyle')
 
 
 def reorder_hessian(H, perm):
@@ -368,10 +367,10 @@ def plot_mode_overlap_heatmap(
 
     # ax.set_xlabel("MACE modes")    # Test modes
     # ax.set_ylabel("CRYSTAL modes") # Reference modes
-    ax.set_xlabel("MACE modes in cm⁻¹", size=12)    # Test modes
-    ax.set_ylabel("CRYSTAL modes in cm⁻¹", size=12) # Reference modes
-    ax.set_title(title)
-
+    ax.set_xlabel(r"MACE modes in cm$^{-1}$", size=12)    # Test modes
+    ax.set_ylabel(r"CRYSTAL modes in cm$^{-1}$", size=12) # Reference modes
+    # ax.set_title(title)
+    ax.text
     if freqs_ref is not None:
         ylabels = [f"{f:.0f}" for f in freqs_ref[skip_first:]]
         step_y = max(1, len(ylabels) // 12)
@@ -439,26 +438,166 @@ def plot_group_overlap_heatmap(
 
         return xlabels, ylabels
 
-
-    #ylabels = group_label_cm(ref_groups, freqs_ref)
-    #xlabels = group_label_cm(test_groups, freqs_test)
-
     xlabels, ylabels = group_label_modes(group_matches)
     
-
-
     ax.set_yticks(np.arange(len(ylabels)))
     ax.set_yticklabels(ylabels)
 
     ax.set_xticks(np.arange(len(xlabels)))
     ax.set_xticklabels(xlabels, rotation=90)
 
-    ax.set_xlabel("Test groups", size=12)       # Test groups
-    ax.set_ylabel("Reference groups", size=12)  # Reference groups
+    ax.set_xlabel("Test groups")       # Test groups
+    ax.set_ylabel("Reference groups")  # Reference groups
     ax.set_title(title)
 
     fig.tight_layout()
     fig.savefig(outfile, dpi=200)
+    plt.close(fig)
+
+
+def plot_combined_overlap_heatmaps(
+    overlap_matrix: np.ndarray,
+    group_overlap_matrix: np.ndarray,
+    group_matches: list,
+    freqs_ref: np.ndarray,
+    freqs_test: np.ndarray,
+    skip_first: int = 3,
+    outfile: str | Path = "combined_overlap_heatmaps.png",
+):
+    """
+    Plot mode-overlap and degenerate-group overlap heatmaps side-by-side.
+
+    Both subplots use:
+        x-axis = CRYSTAL / reference
+        y-axis = MACE / test
+    """
+
+    overlap_matrix = np.asarray(overlap_matrix, dtype=float)
+    group_overlap_matrix = np.asarray(group_overlap_matrix, dtype=float)
+    outfile = Path(outfile)
+
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(14, 5),
+        constrained_layout=False,
+    )
+
+    fig.subplots_adjust(wspace=0.1)
+    # ============================================================
+    # Left: single-mode overlap heatmap
+    # Original overlap_matrix has:
+    #   rows = CRYSTAL modes
+    #   cols = MACE modes
+    # Therefore transpose for:
+    #   x = CRYSTAL
+    #   y = MACE
+    # ============================================================
+
+    ax = axes[0]
+
+    im1 = ax.imshow(
+        overlap_matrix.T,
+        origin="lower",
+        aspect="equal",
+        vmin=0.0,
+        vmax=1.0,
+    )
+
+    ax.set_xlabel(r"CRYSTAL modes in cm$^{-1}$")
+    ax.set_ylabel(r"MACELES modes in cm$^{-1}$")
+
+    ax.text(
+        0.03,
+        0.95,
+        "a) Mode overlap",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        size=18,
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+    )
+
+    # x-axis: CRYSTAL frequencies
+    xlabels = [f"{f:.0f}" for f in freqs_ref[skip_first:]]
+    step_x = max(1, len(xlabels) // 12)
+    ax.set_xticks(np.arange(0, len(xlabels), step_x))
+    ax.set_xticklabels(xlabels[::step_x], rotation=90)
+
+    # y-axis: MACE frequencies
+    ylabels = [f"{f:.0f}" for f in freqs_test[skip_first:]]
+    step_y = max(1, len(ylabels) // 12)
+    ax.set_yticks(np.arange(0, len(ylabels), step_y))
+    ax.set_yticklabels(ylabels[::step_y])
+
+    # ============================================================
+    # Right: degenerate-group overlap heatmap
+    # Original group_overlap_matrix has:
+    #   rows = CRYSTAL groups
+    #   cols = MACE groups
+    # Therefore transpose for:
+    #   x = CRYSTAL groups
+    #   y = MACE groups
+    # ============================================================
+
+    ax = axes[1]
+
+    im2 = ax.imshow(
+        group_overlap_matrix.T,
+        origin="lower",
+        aspect="equal",
+        vmin=0.0,
+        vmax=1.0,
+    )
+
+    cbar2 = fig.colorbar(im2, ax=ax)
+    cbar2.set_label("Overlap")
+
+    xlabels = []
+    ylabels = []
+
+    for g in group_matches:
+        ref = g["ref_modes"]
+        test = g["test_modes"]
+
+        if len(ref) == 1:
+            xlabels.append(f"{ref[0]}")
+        else:
+            xlabels.append(f"{ref[0]}-{ref[-1]}")
+
+        if len(test) == 1:
+            ylabels.append(f"{test[0]}")
+        else:
+            ylabels.append(f"{test[0]}-{test[-1]}")
+
+    ax.set_xticks(np.arange(len(xlabels)))
+    ax.set_xticklabels(xlabels, rotation=90)
+
+    ax.set_yticks(np.arange(len(ylabels)))
+    ax.set_yticklabels(ylabels)
+
+    ax.set_xlabel("CRYSTAL groups")
+    ax.set_ylabel("MACELES groups")
+
+    ax.text(
+        0.03,
+        0.95,
+        "b) Degenerate-group overlap",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        size=18,
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+    )
+
+    # ============================================================
+    # Save
+    # ============================================================
+
+    #fig.savefig(outfile, dpi=200, bbox_inches="tight")
+    #fig.savefig(outfile.with_suffix(".pdf"), bbox_inches="tight")
+    fig.savefig(outfile, dpi=200, bbox_inches="tight", pad_inches=0.05)
+    fig.savefig(outfile.with_suffix(".pdf"), bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
 
 
@@ -569,6 +708,19 @@ def compare_mode_sets(
             freqs_test=freqs_mace,
             outfile=group_heatmap_outfile,
             title=title + " (degenerate groups)",
+        )
+
+        comb_heatmap_outfile = heatmap_outfile.with_name(
+            heatmap_outfile.stem + "_combined" + heatmap_outfile.suffix
+        )
+        print(comb_heatmap_outfile)
+        plot_combined_overlap_heatmaps(
+            overlap_matrix=overlap_cut,
+            group_overlap_matrix=group_overlap_matrix,
+            group_matches=group_matches,
+            freqs_ref=freqs_crys,
+            freqs_test=freqs_mace,
+            outfile=comb_heatmap_outfile,
         )
 
     return {
