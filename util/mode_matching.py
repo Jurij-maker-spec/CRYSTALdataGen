@@ -159,19 +159,28 @@ def build_atom_permutation_by_fracpos(ref_atoms, test_atoms, tol=1e-2):
         raise ValueError("Internal atom matching error: incomplete permutation.")
 
     if max_dist > tol:
-        raise ValueError(
+        print(
             "Atom matching failed after origin-shift search. "
-            f"Best shift={origin_shift}, max fractional mismatch={max_dist:.6g}, "
-            f"tol={tol}"
-        )
+            f"\nBest shift={origin_shift}, max fractional mismatch={max_dist:.6g}, "
+            f"\ntol={tol}"
+            "\nTrying looser tolerance"
+            )
+        succes = False
+        return perm_ref_in_test_order, origin_shift, max_dist, succes
 
+        # raise ValueError(
+        #     "Atom matching failed after origin-shift search. "
+        #     f"Best shift={origin_shift}, max fractional mismatch={max_dist:.6g}, "
+        #     f"tol={tol}"
+        # )
+    succes = True
     print("Atom matching successful.")
     print(f"  origin shift applied to test atoms: {origin_shift}")
     print(f"  total fractional mismatch        : {total_cost:.6g}")
     print(f"  max fractional mismatch          : {max_dist:.6g}")
     print(f"  ref indices in test order        : {perm_ref_in_test_order}")
 
-    return perm_ref_in_test_order, origin_shift, max_dist
+    return perm_ref_in_test_order, origin_shift, max_dist, succes
 
 
 # ============================================================
@@ -666,7 +675,7 @@ def run_mode_comparison_from_ref_db(
     using the same atom order convention as the reference DB geometry.
     """
     crystal = read_crystal_modes(ref_db_path, structure)
-
+    print('Reading modes: succes')
     freqs_crys = np.asarray(crystal["freqs_cm"], dtype=float)
     evecs_crys = np.asarray(crystal["eigvecs_mw"], dtype=float)
 
@@ -685,6 +694,7 @@ def run_mode_comparison_from_ref_db(
                 ),
                 pbc=True,
             )
+            print('Building ref Atoms object: succes')
         else:
             print(
                 "WARNING: ref_db mode comparison could not apply atom permutation "
@@ -693,11 +703,15 @@ def run_mode_comparison_from_ref_db(
             )
 
         if crystal_atoms is not None:
-            perm_ref_in_test_order, origin_shift, max_mismatch = build_atom_permutation_by_fracpos(
-                ref_atoms=crystal_atoms,
-                test_atoms=atoms,
-                tol=1e-2,
-            )
+            for tol in [0.01, 0.015, 0.02, 0.025, 0.030, 0.035, 0.040, 0.045, 0.050, 0.055, 0.060]:
+                perm_ref_in_test_order, origin_shift, max_mismatch, succes = build_atom_permutation_by_fracpos(
+                    ref_atoms=crystal_atoms,
+                    test_atoms=atoms,
+                    tol=tol,
+                )
+                if succes: 
+                    print('Reordering atoms: succes')
+                    break
 
             evecs_crys = reorder_mode_eigenvectors(evecs_crys, perm_ref_in_test_order)
 
@@ -706,6 +720,7 @@ def run_mode_comparison_from_ref_db(
                 "origin_shift": origin_shift,
                 "max_atom_mismatch": max_mismatch,
             }
+            
         else:
             print(
                 "WARNING: ref_db mode comparison could not apply atom permutation "

@@ -443,7 +443,6 @@ def run_single_model_eval(
     )
     result_dir = Path(train_result["result_dir"])
 
-    # print(eval_settings)
     return evaluate_model_func(
         model_path=model_path,
         structure=structure,
@@ -462,6 +461,9 @@ def run_single_model_eval(
         phonopy_plugin=eval_settings.get("phonopy_plugin"),
         write_ref_db=eval_settings.get("write_ref_db", False),
         ref_db_path=eval_settings.get("ref_db_path"),
+        use_ref_db_cache=eval_settings.get("use_ref_db_cache"),
+        force_reeval=eval_settings.get("force_reeval"),
+        plot_only=eval_settings.get("plot_only"),
         run_id=run_name,
         dataset_split=dataset_split,
         sweep_id=sweep_id,

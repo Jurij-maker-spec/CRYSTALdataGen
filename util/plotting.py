@@ -157,25 +157,6 @@ def plot_ir_spectrum_with_frequency_correlation(
     crystal_db_path: str | Path = "/home/jha/jha/python_scripts/CRYSTALdataGen/data/ref_db.h5",
     outfile: str | Path = "ir_spectrum_frequency_correlation.pdf",
 ):
-    """
-    Like plot_ir_spectrum(), but adds a right-side phonon-frequency
-    correlation axis spanning both IR spectrum axes.
-
-    Left:
-        top    -> MACELES broadened IR spectrum
-        bottom -> MACELES vs CRYSTAL broadened IR spectrum
-
-    Right:
-        scatter plot of CRYSTAL frequencies vs MACELES frequencies
-        with dashed y = x reference line.
-
-    Notes
-    -----
-    This does NOT do mode matching.
-    It simply compares frequencies by sorted order after filtering
-    positive modes.
-    """
-
     cmap = CMAP
     c = cmap([0.4, 0.7, 0.8])
 
@@ -205,8 +186,8 @@ def plot_ir_spectrum_with_frequency_correlation(
     # Read CRYSTAL reference
     # ------------------------------------------------------------
     try:
-        f_crys, I_crys = read_crystal_ir_reference(crystal_db_path, structure)
-        f_crys, I_crys, _ = restore_degeneracies(f_crys, I_crys)
+        f_crys_raw, I_crys = read_crystal_ir_reference(crystal_db_path, structure)
+        f_crys, I_crys, _ = restore_degeneracies(f_crys_raw, I_crys)
 
         pos_mask = np.asarray(f_crys) > 1e-6
         f_crys = np.asarray(f_crys, dtype=float)[pos_mask]
@@ -222,11 +203,13 @@ def plot_ir_spectrum_with_frequency_correlation(
     except Exception as exc:
         print(f"----> No CRYSTAL reference spectrum found for {structure}: {exc}")
 
+
     # Optional override if you already have full CRYSTAL phonon frequencies
     if crystal_freqs_cm is not None:
         f_corr_crys = np.asarray(crystal_freqs_cm, dtype=float)
-    elif f_crys is not None:
-        f_corr_crys = np.asarray(f_crys, dtype=float)
+    elif f_crys_raw is not None:
+        print('Something went wrong with the ref freqs: check plotting.py, inference.py')
+        f_corr_crys = np.asarray(f_crys_raw, dtype=float)
     else:
         f_corr_crys = None
 
@@ -339,7 +322,7 @@ def plot_ir_spectrum_with_frequency_correlation(
     ax_corr.set_xlabel("CRYSTAL frequency in cm$^{-1}$")
     ax_corr.set_ylabel("MACELES frequency in cm$^{-1}$")
     ticks = ax_corr.get_xticks()
-    print(ticks)
+    # print(ticks)
     ax_corr.set_yticks(ticks[1:-1])
     ax_corr.yaxis.set_label_position("right")
     ax_corr.tick_params(axis='y', left=False, right=True, labelleft=False, labelright=True)

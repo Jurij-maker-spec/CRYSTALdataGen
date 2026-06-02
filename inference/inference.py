@@ -755,12 +755,12 @@ def rebuild_summary_and_plots_from_cached_eval(
     except Exception as exc:
         print(f"----> Could not load full CRYSTAL frequencies for correlation plot: {exc}")
 
-    crystal_freqs_full = None
-    try:
-        crystal_modes = read_crystal_modes(crystal_db_path, structure)
-        crystal_freqs_full = np.asarray(crystal_modes["freqs_cm"], dtype=float)
-    except Exception as exc:
-        print(f"----> Could not load full CRYSTAL frequencies for correlation plot: {exc}")
+    #crystal_freqs_full = None
+    #try:
+    #    crystal_modes = read_crystal_modes(crystal_db_path, structure)
+    #    crystal_freqs_full = np.asarray(crystal_modes["freqs_cm"], dtype=float)
+    #except Exception as exc:
+    #    print(f"----> Could not load full CRYSTAL frequencies for correlation plot: {exc}")
 
     plot_ir_spectrum_with_frequency_correlation(
         freqs_cm=freqs_cm,
@@ -1035,13 +1035,21 @@ def evaluate_model(
         outfile=ir_plot_path,
     )
 
+    crystal_freqs_full = None
+    try:
+        crystal_modes = read_crystal_modes(crystal_db_path, structure)
+        crystal_freqs_full = np.asarray(crystal_modes["freqs_cm"], dtype=float)
+    except Exception as exc:
+        print(f"----> Could not load full CRYSTAL frequencies for correlation plot: {exc}")
+
     plot_ir_spectrum_with_frequency_correlation(
         freqs_cm=freqs_cm,
         intensities=intensities,
         nu_grid=nu_grid,
         ir_spec=ir_spec,
         structure=structure,
-        crystal_freqs_cm=None,
+        crystal_freqs_cm=crystal_freqs_full,
+        crystal_db_path=crystal_db_path,
         outfile=ir_corr_plot_path,
     )
 
