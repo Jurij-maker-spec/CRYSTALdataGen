@@ -1,0 +1,41 @@
+project_root: /home/jha/jha/python_scripts/CRYSTALdataGen
+
+h5_path: data/train_db.h5
+export_metadata_json: data/tv_meta_pbe.json
+
+train_xyz: data/sc_train_pbe
+valid_xyz: data/sc_valid_pbe
+
+rng_seed: 31415
+
+valid_split_mode: fraction
+valid_per_composition: 20
+valid_fraction_per_composition: 0.10
+
+include_references_in_train: false
+export_stress: true
+export_dipoles: true
+shuffle_final_lists: true
+
+filter_by_training_flag: true
+filter_references_by_training_flag: false
+allow_small_compositions: true
+
+structure_selection_mode: one
+structure_name: SiO2_PBE
+structure_names: null
+
+use_structure_suffix_in_output: true
+
+distortion_id_prefix: null
+distortion_id_prefixes: null
+
+
+dataset_size_sweep:
+  enabled: true
+  sizes: [200, 400, 600, 800, 1000, 1200, 1400]
+  valid_fraction: 0.10
+  output_dir: data/SiO2_PBE
+  name_prefix: SiO2_PBE
+  manifest_yaml: data/SiO2_PBE/SiO2_dataset_file_sweep.yaml
+  manifest_json: data/SiO2_PBE/SiO2_dataset_file_sweep.json

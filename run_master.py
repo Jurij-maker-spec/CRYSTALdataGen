@@ -396,6 +396,7 @@ def main() -> None:
     base_config["results_root"] = str(group_root)
 
     sweep_grid = deepcopy(sweep_grid)
+    dataset_file_sweep = cfg.get("dataset_file_sweep")
     max_parallel = max_parallel_trainings
     effective_max_runs = max_runs
 
@@ -430,6 +431,7 @@ def main() -> None:
             base_config=base_config,
             sweep_grid=sweep_grid,
             sweep_name=sweep_name,
+            dataset_file_sweep=dataset_file_sweep,
         )
 
     if effective_max_runs is not None and not args.resume:
@@ -447,6 +449,7 @@ def main() -> None:
     else:
         master_summary: dict[str, Any] = {
             "sweep_name": sweep_name,
+            "dataset_file_sweep": deepcopy(dataset_file_sweep),
             "created_at": now_iso(),
             "project_root": str(PROJECT_ROOT),
             "structure": structure,

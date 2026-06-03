@@ -67,6 +67,7 @@ def build_config(raw: dict[str, Any]) -> dict[str, Any]:
         ),
         "TRAIN_XYZ": resolve_path(raw.get("train_xyz", "data/train.xyz"), project_root),
         "VALID_XYZ": resolve_path(raw.get("valid_xyz", "data/valid.xyz"), project_root),
+        "DATASET_SIZE_SWEEP": raw.get("dataset_size_sweep", {"enabled": False}),
 
         "RNG_SEED": int(raw.get("rng_seed", 31415)),
 
@@ -610,6 +611,133 @@ def write_export_metadata_json(
     print(f"[OK] Wrote export metadata JSON to {path}")
 
 
+def dataset_size_sweep_enabled(cfg: dict[str, Any]) -> bool:
+    return bool((cfg.get("DATASET_SIZE_SWEEP") or {}).get("enabled", False))
+
+
+def build_dataset_size_sweep_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    raw = cfg.get("DATASET_SIZE_SWEEP") or {}
+
+    sizes = [int(x) for x in raw.get("sizes", [])]
+    if not sizes:
+        raise ValueError("dataset_size_sweep.enabled=true requires dataset_size_sweep.sizes")
+
+    sizes = sorted(set(sizes))
+
+    valid_fraction = float(raw.get("valid_fraction", 0.10))
+    if valid_fraction != 0.10:
+        print("[WARN] For now this workflow is intended for 90/10. Using configured value anyway.")
+
+    if not (0.0 < valid_fraction < 1.0):
+        raise ValueError("dataset_size_sweep.valid_fraction must satisfy 0 < fraction < 1")
+
+    output_dir = resolve_path(
+        raw.get("output_dir", "data/dataset_size_sweep"),
+        cfg["PROJECT_ROOT"],
+    )
+
+    name_prefix = str(raw.get("name_prefix", cfg["STRUCTURE_NAME"] or "dataset"))
+
+    manifest_yaml = resolve_path(
+        raw.get("manifest_yaml", output_dir / f"{name_prefix}_dataset_file_sweep.yaml"),
+        cfg["PROJECT_ROOT"],
+    )
+
+    manifest_json = resolve_path(
+        raw.get("manifest_json", output_dir / f"{name_prefix}_dataset_file_sweep.json"),
+        cfg["PROJECT_ROOT"],
+    )
+
+    return {
+        "sizes": sizes,
+        "valid_fraction": valid_fraction,
+        "output_dir": output_dir,
+        "name_prefix": name_prefix,
+        "manifest_yaml": manifest_yaml,
+        "manifest_json": manifest_json,
+    }
+
+
+def split_cumulative_90_10(
+    atoms_pool,
+    *,
+    total_size: int,
+    valid_fraction: float,
+    rng_seed: int,
+):
+    if total_size > len(atoms_pool):
+        raise ValueError(
+            f"Requested dataset size {total_size}, but only {len(atoms_pool)} usable distortions exist."
+        )
+
+    selected = list(atoms_pool[:total_size])
+
+    # For 90/10 this gives exact stable cumulative splits for sizes divisible by 10.
+    # Example: n=200 -> 20 valid, 180 train.
+    stride = int(round(1.0 / valid_fraction))
+    if abs(valid_fraction - 1.0 / stride) > 1e-12:
+        raise ValueError(
+            "Current cumulative stable split requires valid_fraction = 1/N, "
+            f"got {valid_fraction}"
+        )
+
+    rng = random.Random(rng_seed)
+    offset = rng.randrange(stride)
+
+    valid_idx = set(range(offset, total_size, stride))
+
+    train_atoms = []
+    valid_atoms = []
+
+    for i, atoms in enumerate(selected):
+        if i in valid_idx:
+            valid_atoms.append(atoms)
+        else:
+            train_atoms.append(atoms)
+
+    expected_valid = int(round(valid_fraction * total_size))
+    if len(valid_atoms) != expected_valid:
+        raise RuntimeError(
+            f"Split mismatch for n={total_size}: got valid={len(valid_atoms)}, "
+            f"expected {expected_valid}"
+        )
+
+    return train_atoms, valid_atoms
+
+
+def path_relative_to_data_dir(path: Path, cfg: dict[str, Any]) -> str:
+    data_dir = cfg["PROJECT_ROOT"] / "data"
+    try:
+        return str(path.resolve().relative_to(data_dir.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def write_dataset_size_sweep_manifests(
+    *,
+    datasets: dict[str, dict[str, Any]],
+    sweep_cfg: dict[str, Any],
+):
+    payload = {
+        "dataset_file_sweep": {
+            "enabled": True,
+            "datasets": datasets,
+        }
+    }
+
+    sweep_cfg["manifest_yaml"].parent.mkdir(parents=True, exist_ok=True)
+    with open(sweep_cfg["manifest_yaml"], "w", encoding="utf-8") as f:
+        yaml.safe_dump(payload, f, sort_keys=False)
+
+    with open(sweep_cfg["manifest_json"], "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=False)
+
+    print("\n=== Dataset file sweep YAML block ===")
+    print(yaml.safe_dump(payload, sort_keys=False))
+    print(f"[OK] Wrote YAML manifest: {sweep_cfg['manifest_yaml']}")
+    print(f"[OK] Wrote JSON manifest: {sweep_cfg['manifest_json']}")
+
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -638,6 +766,73 @@ def main():
         grouped_distortions, skipped_distortions, skipped_prefix_distortions, skipped_explicit = (
             collect_distortion_atoms(h5, selected_names, cfg)
         )
+
+
+    if dataset_size_sweep_enabled(cfg):
+        sweep_cfg = build_dataset_size_sweep_cfg(cfg)
+
+        if cfg["STRUCTURE_SELECTION_MODE"] != "one":
+            raise ValueError(
+                "dataset_size_sweep currently requires structure_selection_mode: one"
+            )
+
+        if cfg["INCLUDE_REFERENCES_IN_TRAIN"]:
+            raise ValueError(
+                "dataset_size_sweep expects pure distortion counts. "
+                "Set include_references_in_train: false."
+            )
+
+        structure_name = selected_names[0]
+        atoms_pool = list(grouped_distortions[structure_name])
+
+        print("\n=== Dataset size sweep ===")
+        print(f"Structure        : {structure_name}")
+        print(f"Usable structures: {len(atoms_pool)}")
+        print(f"Sizes            : {sweep_cfg['sizes']}")
+        print(f"Valid fraction   : {sweep_cfg['valid_fraction']}")
+
+        sweep_cfg["output_dir"].mkdir(parents=True, exist_ok=True)
+
+        datasets_for_master_yaml = {}
+
+        for total_size in sweep_cfg["sizes"]:
+            train_atoms, valid_atoms = split_cumulative_90_10(
+                atoms_pool,
+                total_size=total_size,
+                valid_fraction=sweep_cfg["valid_fraction"],
+                rng_seed=cfg["RNG_SEED"],
+            )
+
+            tag = f"n{total_size}"
+
+            train_path = sweep_cfg["output_dir"] / f"train_{sweep_cfg['name_prefix']}_{tag}.xyz"
+            valid_path = sweep_cfg["output_dir"] / f"valid_{sweep_cfg['name_prefix']}_{tag}.xyz"
+
+            if cfg["SHUFFLE_FINAL_LISTS"]:
+                rng = random.Random(cfg["RNG_SEED"] + total_size)
+                rng.shuffle(train_atoms)
+                rng.shuffle(valid_atoms)
+
+            write_xyz(train_path, train_atoms)
+            write_xyz(valid_path, valid_atoms)
+
+            datasets_for_master_yaml[tag] = {
+                "dataset_size": int(total_size),
+                "train_file": path_relative_to_data_dir(train_path, cfg),
+                "valid_file": path_relative_to_data_dir(valid_path, cfg),
+            }
+
+            print(
+                f"[OK] {tag}: total={total_size}, "
+                f"train={len(train_atoms)}, valid={len(valid_atoms)}"
+            )
+
+        write_dataset_size_sweep_manifests(
+            datasets=datasets_for_master_yaml,
+            sweep_cfg=sweep_cfg,
+        )
+
+        return
 
     train_dist_atoms, valid_atoms = split_grouped_distortions(
         grouped=grouped_distortions,

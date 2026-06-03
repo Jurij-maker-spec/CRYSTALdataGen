@@ -146,26 +146,69 @@ def make_run_name(cfg: dict[str, Any]) -> str:
         f"seed{cfg['seed']}",
         cfg["chem"],
     ]
+
+    if cfg.get("dataset_tag") is not None:
+        bits.append(str(cfg["dataset_tag"]))
+
     if cfg.get("use_stress", False):
         bits.append(f"sw{format_float_for_name(cfg['stress_weight'])}")
-
-    # This should remove the datestamp
-    # bits.append(now_tag())
 
     return "_".join(bits)
 
 
-def generate_sweep_configs(base_cfg: dict[str, Any], sweep_grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
+def normalized_dataset_variants(dataset_file_sweep: dict[str, Any] | None):
+    if not dataset_file_sweep or not dataset_file_sweep.get("enabled", False):
+        return [None]
+
+    datasets = dataset_file_sweep.get("datasets")
+    if not isinstance(datasets, dict) or not datasets:
+        raise ValueError("dataset_file_sweep.enabled=true requires non-empty datasets dict")
+
+    variants = []
+    for tag, data in datasets.items():
+        if "train_file" not in data or "valid_file" not in data:
+            raise ValueError(f"Dataset variant {tag} needs train_file and valid_file")
+
+        variants.append({
+            "dataset_tag": str(tag),
+            "dataset_size": data.get("dataset_size"),
+            "train_file": str(data["train_file"]),
+            "valid_file": str(data["valid_file"]),
+        })
+
+    return variants
+
+
+def generate_sweep_configs(
+    base_cfg: dict[str, Any],
+    sweep_grid: dict[str, list[Any]],
+    dataset_file_sweep: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     keys = list(sweep_grid.keys())
     value_lists = [sweep_grid[k] for k in keys]
+    dataset_variants = normalized_dataset_variants(dataset_file_sweep)
 
     configs: list[dict[str, Any]] = []
+
     for values in itertools.product(*value_lists):
-        cfg = deepcopy(base_cfg)
-        for key, value in zip(keys, values):
-            cfg[key] = value
-        cfg["run_name"] = make_run_name(cfg)
-        configs.append(cfg)
+        for dataset_variant in dataset_variants:
+            cfg = deepcopy(base_cfg)
+
+            for key, value in zip(keys, values):
+                cfg[key] = value
+
+            if dataset_variant is not None:
+                cfg.update(dataset_variant)
+            
+            if "train_file" not in cfg or "valid_file" not in cfg:
+                raise ValueError(
+                    "No train/valid files defined. "
+                    "Use dataset_file_sweep or define train_file/valid_file in base_config."
+                )
+
+            cfg["run_name"] = make_run_name(cfg)
+            configs.append(cfg)
+
     return configs
 
 
@@ -231,6 +274,7 @@ def prepare_sweep(
     base_config: dict[str, Any] | None = None,
     sweep_grid: dict[str, list[Any]] | None = None,
     sweep_name: str | None = None,
+    dataset_file_sweep: dict[str, Any] | None = None,
 ) -> tuple[Path, list[Path], list[dict[str, Any]]]:
     """
     Create all run configs and return:
@@ -255,7 +299,12 @@ def prepare_sweep(
     
     ensure_dir(sweep_root)
 
-    configs = generate_sweep_configs(base_config, sweep_grid)
+    configs = generate_sweep_configs(
+        base_cfg=base_config,
+        sweep_grid=sweep_grid,
+        dataset_file_sweep=dataset_file_sweep,
+    )
+
     run_config_paths = write_run_configs(configs, sweep_root)
     write_sweep_manifest(configs, sweep_root, sweep_name)
 
