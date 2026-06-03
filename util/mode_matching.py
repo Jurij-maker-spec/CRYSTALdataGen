@@ -713,7 +713,7 @@ def compare_mode_sets(
         comb_heatmap_outfile = heatmap_outfile.with_name(
             heatmap_outfile.stem + "_combined" + heatmap_outfile.suffix
         )
-        print(comb_heatmap_outfile)
+        # print(comb_heatmap_outfile)
         plot_combined_overlap_heatmaps(
             overlap_matrix=overlap_cut,
             group_overlap_matrix=group_overlap_matrix,

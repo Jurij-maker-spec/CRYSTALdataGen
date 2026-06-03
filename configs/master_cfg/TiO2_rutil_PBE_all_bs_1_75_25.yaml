@@ -1,5 +1,5 @@
 structure: TiO2_rutil_PBE
-results_group_dir: TiO2_rutil_PBE_10_90_1000
+results_group_dir: TiO2_rutil_PBE_25_75
 
 dry_run: false
 smoke_test: false
@@ -24,8 +24,8 @@ eval_settings:
   plot_only: false
 
 base_config:
-  train_file: train_TiO2_rutil_PBE.xyz
-  valid_file: valid_TiO2_rutil_PBE.xyz
+  train_file: train_TiO2_rutil_PBE_1123.xyz
+  valid_file: valid_TiO2_rutil_PBE_374.xyz
   chem: TiO2
   atomic_numbers: [8, 22]
   model_type: MACELES
@@ -35,11 +35,11 @@ base_config:
   max_epochs: 173
 
 sweep_grid:
-  seed: [1, 2]
-  r_max: [5.5, 6.0, 6.5, 6.75, 7.0, 7.25, 7.5]
-  batch_size: [2]
-  valid_batch_size: [2]
-  energy_weight: [2.0]
-  forces_weight: [100.0]
+  seed: [2]
+  r_max: [2.75, 3.00, 3.25, 5.5, 6.0, 6.75, 7.0, 7.25, 7.5]
+  batch_size: [1]
+  valid_batch_size: [1]
+  energy_weight: [2.0, 3.0]
+  forces_weight: [75.0, 100.0]
   use_stress: [false]
   stress_weight: [2.0] 

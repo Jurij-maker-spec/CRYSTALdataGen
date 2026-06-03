@@ -1,6 +1,6 @@
 # Split is 10/90
 structure: TiO2_rutil_PBE
-results_group_dir: TiO2_rutil_PBE_sc
+results_group_dir: TiO2_rutil_PBE_10_90
 
 dry_run: false
 smoke_test: false
@@ -25,8 +25,8 @@ eval_settings:
   plot_only: false
 
 base_config:
-  train_file: sc_train_TiO2_rutil_PBE_495.xyz
-  valid_file: sc_valid_TiO2_rutil_PBE_55.xyz
+  train_file: train_TiO2_rutil_PBE_1347.xyz
+  valid_file: valid_TiO2_rutil_PBE_150.xyz
   chem: TiO2
   atomic_numbers: [8, 22]
   model_type: MACELES
@@ -37,10 +37,10 @@ base_config:
 
 sweep_grid:
   seed: [2]
-  r_max: [3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0]
+  r_max: [2.75, 3.00, 3.25, 5.5, 6.0, 6.75, 7.0, 7.25, 7.5]
   batch_size: [1]
   valid_batch_size: [1]
-  energy_weight: [2.0]
-  forces_weight: [100.0]
+  energy_weight: [2.0, 3.0]
+  forces_weight: [75.0, 100.0]
   use_stress: [false]
   stress_weight: [2.0] 

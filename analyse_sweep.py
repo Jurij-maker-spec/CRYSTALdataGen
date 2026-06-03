@@ -47,8 +47,9 @@ ROOT = Path(__file__).resolve().parent
 # EVAL = Path("SiO2_10_90/SiO2_master_eval_full_260424_145211")
 # EVAL = Path("AlN_10_90/AlN_master_eval_full_260430_092903")
 # EVAL = Path("Al2O3_10_90/Al2O3_master_eval_full_260505_103502")
-EVAL = Path("Al2O3_10_90/Al2O3_master_eval_full_260519_084804")
-
+# EVAL = Path("Al2O3_10_90/Al2O3_master_eval_full_260519_084804")
+# EVAL = Path("TiO2_rutil_PBE_sc/TiO2_rutil_PBE_master_eval_full_260521_093822/")
+EVAL = Path("TiO2_rutil_10_90_1000/TiO2_rutil_master_eval_full_260511_160039/")
 
 
 EVAL_ROOT = ROOT / 'results' / EVAL 

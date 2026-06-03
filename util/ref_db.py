@@ -817,4 +817,89 @@ def read_model_evaluation(
 
         return out
     
+
+def read_mode_overlap(
+    ref_db_path: str | Path,
+    structure: str,
+    run_id: str,
+    dataset_split: str = "ungrouped",
+    sweep_id: str = "manual",
+) -> dict[str, Any]:
+    """
+    Read cached mode-overlap data from the model evaluation DB entry.
+
+    Returns
+    -------
+    dict
+        Contains:
+            overlap_cut
+            group_overlap_matrix
+            group_matches
+    """
+
+    path = model_evaluation_group_path(
+        structure=structure,
+        dataset_split=dataset_split,
+        sweep_id=sweep_id,
+        run_id=run_id,
+    )
+
+    with h5py.File(ref_db_path, "r") as h5:
+        if path not in h5:
+            raise KeyError(f"Missing model evaluation group: {path}")
+
+        eg = h5[path]
+
+        if "mode_matching" not in eg:
+            raise KeyError(f"No mode_matching group in: {path}")
+
+        mg = eg["mode_matching"]
+
+        out = {}
+
+        # ------------------------------------------------------------
+        # overlap matrices
+        # ------------------------------------------------------------
+        if "overlap_matrices" in mg:
+            omg = mg["overlap_matrices"]
+
+            if "overlap_cut" in omg:
+                out["overlap_cut"] = np.asarray(
+                    omg["overlap_cut"][()],
+                    dtype=float,
+                )
+
+            if "group_overlap_matrix" in omg:
+                out["group_overlap_matrix"] = np.asarray(
+                    omg["group_overlap_matrix"][()],
+                    dtype=float,
+                )
+
+        # ------------------------------------------------------------
+        # group matches
+        # ------------------------------------------------------------
+        out["group_matches"] = []
+
+        if "group_matches" in mg:
+            gg = mg["group_matches"]
+
+            ref_start = np.asarray(gg["ref_group_start"][()], dtype=int)
+            ref_end = np.asarray(gg["ref_group_end"][()], dtype=int)
+
+            model_start = np.asarray(gg["model_group_start"][()], dtype=int)
+            model_end = np.asarray(gg["model_group_end"][()], dtype=int)
+
+            for i in range(len(ref_start)):
+                out["group_matches"].append({
+                    "ref_modes": np.arange(
+                        ref_start[i],
+                        ref_end[i] + 1,
+                    ),
+                    "test_modes": np.arange(
+                        model_start[i],
+                        model_end[i] + 1,
+                    ),
+                })
+
+        return out
     

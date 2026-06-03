@@ -66,12 +66,14 @@ from util.mode_matching import (
     run_mode_comparison_from_ref_db,
     print_mode_match_summary,
     print_group_match_summary,
+    plot_combined_overlap_heatmaps,
 )
 from util.ref_db import (
     write_model_evaluation,
     model_evaluation_exists,
     read_model_evaluation,
     read_crystal_modes,
+    read_mode_overlap,
 )
 
 # ------------------------------------------------------------------
@@ -521,7 +523,14 @@ def _as_float_or_none(value):
         return None
 
 
-def summarize_crystal_mode_comparison(comparison: dict, crystal_hess_path: Path, freq_out_path: Path | None, crystal_hessian_units: str, skip_first: int, degeneracy_tol: float, heatmap_outfile: Path) -> dict:
+def summarize_crystal_mode_comparison(comparison: dict, 
+                                      crystal_hess_path: Path, 
+                                      freq_out_path: Path | None, 
+                                      crystal_hessian_units: str, 
+                                      skip_first: int, 
+                                      degeneracy_tol: float, 
+                                      heatmap_outfile: Path
+                                  ) -> dict:
     """Condense the verbose ModeComparison output for JSON summaries and ranking CSVs."""
     out = empty_crystal_mode_comparison_summary()
     out.update({
@@ -541,6 +550,16 @@ def summarize_crystal_mode_comparison(comparison: dict, crystal_hess_path: Path,
     out["n_subgroups"] = int(len(subgroups))
     out["matches"] = matches
     out["subgroups"] = subgroups
+
+    # Preserve overlap matrices for DB writeback and later replotting.
+    for key in [
+        "overlap_full",
+        "overlap_cut",
+        "group_overlap_matrix",
+    ]:
+        if key in comparison and comparison[key] is not None:
+            out[key] = comparison[key]
+
     freq_errors, overlaps = [], []
     for m in matches:
         if not isinstance(m, dict):
@@ -755,12 +774,6 @@ def rebuild_summary_and_plots_from_cached_eval(
     except Exception as exc:
         print(f"----> Could not load full CRYSTAL frequencies for correlation plot: {exc}")
 
-    #crystal_freqs_full = None
-    #try:
-    #    crystal_modes = read_crystal_modes(crystal_db_path, structure)
-    #    crystal_freqs_full = np.asarray(crystal_modes["freqs_cm"], dtype=float)
-    #except Exception as exc:
-    #    print(f"----> Could not load full CRYSTAL frequencies for correlation plot: {exc}")
 
     plot_ir_spectrum_with_frequency_correlation(
         freqs_cm=freqs_cm,
@@ -778,6 +791,47 @@ def rebuild_summary_and_plots_from_cached_eval(
         imag_flags=imag_flags,
         intensities=intensities,
     )
+
+    # ------------------------------------------------------------
+    # Rebuild cached overlap plots
+    # ------------------------------------------------------------
+    if compare_crystal_modes:
+        try:
+            overlap_data = read_mode_overlap(
+                ref_db_path=crystal_db_path,
+                structure=structure,
+                run_id=run_id,
+                dataset_split=dataset_split,
+                sweep_id=sweep_id,
+            )
+
+            overlap_cut = overlap_data.get("overlap_cut")
+            group_overlap_matrix = overlap_data.get("group_overlap_matrix")
+            group_matches = overlap_data.get("group_matches", [])
+
+            if (
+                overlap_cut is not None
+                and group_overlap_matrix is not None
+                and crystal_freqs_full is not None
+            ):
+                overlap_outfile = (
+                    output_dir / f"{structure}_mode_overlap_combined.png"
+                )
+
+                plot_combined_overlap_heatmaps(
+                    overlap_matrix=overlap_cut,
+                    group_overlap_matrix=group_overlap_matrix,
+                    group_matches=group_matches,
+                    freqs_ref=np.asarray(crystal_freqs_full, dtype=float),
+                    freqs_test=np.asarray(freqs_cm, dtype=float),
+                    skip_first=mode_skip_first,
+                    outfile=overlap_outfile,
+                )
+
+        except Exception as exc:
+            print(
+                f"----> Cached overlap replot failed for {structure}: {exc}"
+            )   
 
     ranking_metrics = dict(cached.get("ranking_metrics", {}))
 
@@ -812,6 +866,8 @@ def rebuild_summary_and_plots_from_cached_eval(
             "dataset_split": dataset_split,
             "sweep_id": sweep_id,
         },
+        "mode_overlap_plot":
+            output_dir / f"{structure}_mode_overlap_combined.png",
     }
 
     np.savez(
