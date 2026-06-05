@@ -1,0 +1,76 @@
+structure: SiO2_PBE
+results_group_dir: SiO2_PBE_cum_75_25
+
+dry_run: false
+smoke_test: false
+max_runs: null
+max_parallel_trainings: 1
+
+crystal_db_path: data/ref_db.h5
+
+eval_settings:
+  device: cuda
+  default_dtype: float64
+  frechet: true
+  fmax: 1.0e-11
+  compare_crystal_modes: true
+  crystal_hess_path: null
+  crystal_freq_out_path: null
+  crystal_hessian_units: hartree/bohr^2
+  write_ref_db: true
+  ref_db_path: data/ref_db.h5
+  use_ref_db_cache: true
+  force_reeval: false
+  plot_only: false
+
+base_config:
+  chem: SiO2
+  atomic_numbers: [8, 14]
+  model_type: MACELES
+  E0s: average
+  batch_size: 2
+  valid_batch_size: 2
+  max_epochs: 173
+
+sweep_grid:
+  seed: [2]
+  r_max: [4.0, 4.25, 4.5]
+  batch_size: [2]
+  valid_batch_size: [2]
+  energy_weight: [1.0]
+  forces_weight: [75.0]
+  use_stress: [false]
+  stress_weight: [2.0] 
+
+dataset_file_sweep:
+  enabled: true
+  datasets:
+    n200:
+      dataset_size: 200
+      train_file: SiO2_PBE_75_25/train_SiO2_PBE_n200.xyz
+      valid_file: SiO2_PBE_75_25/valid_SiO2_PBE_n200.xyz
+    n400:
+      dataset_size: 400
+      train_file: SiO2_PBE_75_25/train_SiO2_PBE_n400.xyz
+      valid_file: SiO2_PBE_75_25/valid_SiO2_PBE_n400.xyz
+    n600:
+      dataset_size: 600
+      train_file: SiO2_PBE_75_25/train_SiO2_PBE_n600.xyz
+      valid_file: SiO2_PBE_75_25/valid_SiO2_PBE_n600.xyz
+    n800:
+      dataset_size: 800
+      train_file: SiO2_PBE_75_25/train_SiO2_PBE_n800.xyz
+      valid_file: SiO2_PBE_75_25/valid_SiO2_PBE_n800.xyz
+    n1000:
+      dataset_size: 1000
+      train_file: SiO2_PBE_75_25/train_SiO2_PBE_n1000.xyz
+      valid_file: SiO2_PBE_75_25/valid_SiO2_PBE_n1000.xyz
+    n1200:
+      dataset_size: 1200
+      train_file: SiO2_PBE_75_25/train_SiO2_PBE_n1200.xyz
+      valid_file: SiO2_PBE_75_25/valid_SiO2_PBE_n1200.xyz
+    n1400:
+      dataset_size: 1400
+      train_file: SiO2_PBE_75_25/train_SiO2_PBE_n1400.xyz
+      valid_file: SiO2_PBE_75_25/valid_SiO2_PBE_n1400.xyz
+

@@ -539,7 +539,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--compare-crystal-modes", action="store_true")
     parser.add_argument("--mode-skip-first", type=int, default=3)
-    parser.add_argument("--mode-degeneracy-tol", type=float, default=1.0)
+    parser.add_argument("--mode-degeneracy-tol", type=float, default=0.5)
 
     parser.add_argument(
         "--no-update-master-summary",

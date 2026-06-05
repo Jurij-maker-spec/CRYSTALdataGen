@@ -17,6 +17,30 @@ def parse_float_token(value: str) -> float:
     return float(value)
 
 
+def parse_split_train_size(split: str, structure: str) -> dict:
+    """
+    Examples:
+      SiO2_1000_10_90      -> train_size_split=1000
+      SiO2_PBE_1000_10_90  -> train_size_split=1000
+      SiO2_10_90           -> no train size
+      SiO2_PBE_sc          -> no train size
+    """
+    out = {}
+
+    prefix = structure + "_"
+
+    if not split.startswith(prefix):
+        return out
+
+    tail = split[len(prefix):]
+    parts = tail.split("_")
+
+    if len(parts) >= 3 and parts[0].isdigit():
+        out["train_size_split"] = int(parts[0])
+
+    return out
+
+
 def parse_run_id(run_id: str) -> dict:
     """
     Extract common training parameters from run names.
@@ -34,6 +58,7 @@ def parse_run_id(run_id: str) -> dict:
         "forces_weight": r"(?:^|_)fw([0-9.eE+p+-]+)(?:_|$)",
         "r_max": r"(?:^|_)rmax([0-9.eE+p+-]+)(?:_|$)",
         "seed": r"(?:^|_)seed([0-9]+)(?:_|$)",
+        "train_size": r"_n([0-9]+)(?:_|$)",
     }
 
     out = {}
@@ -45,7 +70,7 @@ def parse_run_id(run_id: str) -> dict:
 
         value = m.group(1)
 
-        if key in {"batch_size", "max_epochs", "seed"}:
+        if key in {"batch_size", "max_epochs", "seed", "train_size"}:
             value = int(value)
         elif key in {"energy_weight", "forces_weight", "r_max"}:
             value = parse_float_token(value)
@@ -148,6 +173,7 @@ def print_best_models(rows, n=7, metric="composite_score"):
     header = (
         f"{'#':>2} "
         f"{'split':<22} "
+        f"{'dataset_size':<15}"
         f"{'r_max':>7} "
         f"{'ew':>7} "
         f"{'fw':>7} "
@@ -168,6 +194,7 @@ def print_best_models(rows, n=7, metric="composite_score"):
         print(
             f"{i:>2d} "
             f"{str(r.get('split', '--')):<22.22} "
+            f"{str(r.get('train_size', '--')):<15}"
             f"{format_latex_number(r.get('r_max'), 3):>7} "
             f"{format_latex_number(r.get('energy_weight'), 3):>7} "
             f"{format_latex_number(r.get('forces_weight'), 3):>7} "
@@ -215,7 +242,6 @@ def print_best_models(rows, n=7, metric="composite_score"):
     print(r"\end{table}")
 
 
-
 def add_if_numeric(store, key, value):
     try:
         value = float(value)
@@ -257,6 +283,10 @@ def summarize_structure(h5, structure: str, include_all_splits: bool = False):
         sweep_values.add((split, sweep_id))
 
         params = parse_run_id(run_id)
+        split_info = parse_split_train_size(split, structure)
+        train_size = params.get("train_size")
+        if train_size is None:
+            train_size = split_info.get("train_size_split")
 
         for key, value in params.items():
             param_values[key].add(value)
@@ -355,6 +385,7 @@ def summarize_structure(h5, structure: str, include_all_splits: bool = False):
         )
 
     print_best_models(model_rows, n=7, metric="composite_score")
+
 
 def main():
     parser = argparse.ArgumentParser(
