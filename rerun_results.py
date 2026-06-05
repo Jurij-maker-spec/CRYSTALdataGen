@@ -41,6 +41,8 @@ from inference import evaluate_model
 from util.eval import build_eval_row, append_master_csv, choose_best_model
 from util.io import load_json, save_json
 from util.eval import eval_cif_structure_name
+from util.ref_db import update_model_ranking_metrics, read_model_evaluation
+from inference import make_composite_score
 
 
 REQUIRED_ENV = "mace_env_3_12"
@@ -258,6 +260,66 @@ def passes_filters(run_dir: Path, structure: str, args: argparse.Namespace) -> b
 # ============================================================
 # evaluation
 # ============================================================
+def recompute_score_from_db(
+    *,
+    ref_db_path: Path,
+    structure: str,
+    dataset_split: str,
+    sweep_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+
+    cached = read_model_evaluation(
+        ref_db_path=ref_db_path,
+        structure=structure,
+        run_id=run_id,
+        dataset_split=dataset_split,
+        sweep_id=sweep_id,
+    )
+
+    ranking_metrics = dict(
+        cached.get("ranking_metrics", {})
+    )
+    print(f'Old score: {ranking_metrics.get("composite_score"):5.2f}')
+
+    composite_score, score_parts = make_composite_score(
+        freq_mae_ir_cm1=ranking_metrics.get(
+            "freq_mae_ir_cm1"
+        ),
+        freq_mae_ir_weighted_cm1=ranking_metrics.get(
+            "freq_mae_ir_weighted_cm1"
+        ),
+        spectrum_rel_l2=ranking_metrics.get(
+            "spectrum_rel_l2"
+        ),
+        intensity_pearson_r=ranking_metrics.get(
+            "intensity_pearson_r"
+        ),
+        mean_mode_overlap=ranking_metrics.get(
+            "crystal_mode_mean_overlap"
+        ),
+        mean_subspace_overlap=ranking_metrics.get(
+            "crystal_mode_mean_subspace_overlap"
+        ),
+    )
+
+    print(f'New score: {composite_score:5.2f}')
+    ranking_metrics["composite_score"] = composite_score
+
+    for key, value in score_parts.items():
+        ranking_metrics[f"score_{key}"] = value
+
+    update_model_ranking_metrics(
+        ref_db_path=ref_db_path,
+        structure=structure,
+        run_id=run_id,
+        dataset_split=dataset_split,
+        sweep_id=sweep_id,
+        ranking_metrics=ranking_metrics,
+    )
+
+    return ranking_metrics
+
 
 def evaluate_run(run_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     run_cfg_path = run_dir / "run_config.json"
@@ -282,6 +344,26 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
         "deploy_model_path": None,
         "error": None,
     }
+
+    if args.score_only:
+
+        ranking_metrics = recompute_score_from_db(
+            ref_db_path=ref_db_path,
+            structure=structure,
+            dataset_split=dataset_split,
+            sweep_id=sweep_id,
+            run_id=run_name,
+        )
+
+        return {
+            "status": "score_updated",
+            "run_name": run_name,
+            "structure": structure,
+            "dataset_split": dataset_split,
+            "sweep_id": sweep_id,
+            "run_dir": str(run_dir),
+            "ranking_metrics": ranking_metrics,
+        }
 
     if args.eval_missing and eval_complete(run_dir, structure):
         return {
@@ -431,6 +513,12 @@ def parse_args() -> argparse.Namespace:
         "--pbe-only",
         action="store_true",
         help="Only evaluate runs whose inferred structure contains 'PBE'.",
+    )
+
+    mode.add_argument(
+        "--score-only",
+        action="store_true",
+        help="Only recompute composite score from cached DB metrics and write ranking_metrics back to DB.",
     )
 
     parser.add_argument("--dry-run", action="store_true")

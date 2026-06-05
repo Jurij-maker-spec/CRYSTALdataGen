@@ -147,6 +147,41 @@ def find_best_run(runs, metric="composite_score"):
     return best
 
 
+def evaluation_group_path(structure, split, sweep_id, run_id):
+    return f"structures/{structure}/evaluations/{split}/{sweep_id}/{run_id}"
+
+
+def read_dataset(group, name):
+    if name not in group:
+        raise KeyError(f"Missing dataset: {group.name}/{name}")
+    return np.asarray(group[name][()])
+
+
+def print_array(name, arr):
+    print(f"{name}: shape={arr.shape}, dtype={arr.dtype}")
+    print(arr)
+
+
+def compare_numeric_arrays(ref, model, label="array"):
+    ref = np.asarray(ref, dtype=float)
+    model = np.asarray(model, dtype=float)
+
+    print(f"{label}:")
+    print(f"  ref shape   : {ref.shape}")
+    print(f"  model shape : {model.shape}")
+
+    if ref.shape != model.shape:
+        print("  shape match : NO")
+        return
+
+    diff = model - ref
+    print("  shape match : yes")
+    print(f"  MAE         : {np.mean(np.abs(diff)):.6g}")
+    print(f"  RMSE        : {np.sqrt(np.mean(diff**2)):.6g}")
+    print(f"  max abs     : {np.max(np.abs(diff)):.6g}")
+    print(f"  mean signed : {np.mean(diff):.6g}")
+
+
 def print_structure_summary(h5, structure):
     path = f"structures/{structure}"
 
@@ -257,6 +292,128 @@ def print_details(h5, structure):
     return True
 
 
+def print_frequency_comparison(ref_freqs, model_freqs):
+    ref_freqs = np.asarray(ref_freqs, dtype=float)
+    model_freqs = np.asarray(model_freqs, dtype=float)
+
+    n = min(len(ref_freqs), len(model_freqs))
+
+    print("=" * 80)
+    print("FREQUENCY COMPARISON")
+    print("=" * 80)
+    print(f"n_ref   : {len(ref_freqs)}")
+    print(f"n_model : {len(model_freqs)}")
+    print(f"n_used  : {n}")
+    print()
+
+    diff = model_freqs[:n] - ref_freqs[:n]
+
+    print(f"MAE         : {np.mean(np.abs(diff)):.6g} cm^-1")
+    print(f"RMSE        : {np.sqrt(np.mean(diff**2)):.6g} cm^-1")
+    print(f"max abs     : {np.max(np.abs(diff)):.6g} cm^-1")
+    print(f"mean signed : {np.mean(diff):.6g} cm^-1")
+    print()
+
+    header = (
+        f"{'mode':>5} "
+        f"{'ref_cm1':>14} "
+        f"{'model_cm1':>14} "
+        f"{'delta_cm1':>14} "
+        f"{'abs_delta':>14}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for i in range(n):
+        d = model_freqs[i] - ref_freqs[i]
+        print(
+            f"{i:5d} "
+            f"{ref_freqs[i]:14.6f} "
+            f"{model_freqs[i]:14.6f} "
+            f"{d:14.6f} "
+            f"{abs(d):14.6f}"
+        )
+
+
+def compare_property(
+    h5,
+    *,
+    structure,
+    split,
+    sweep_id,
+    run_id,
+    prop,
+    fmt="auto",
+):
+    crystal_path = f"structures/{structure}/crystal"
+    eval_path = evaluation_group_path(structure, split, sweep_id, run_id)
+
+    if crystal_path not in h5:
+        raise KeyError(f"Missing CRYSTAL reference group: {crystal_path}")
+
+    if eval_path not in h5:
+        raise KeyError(f"Missing model evaluation group: {eval_path}")
+
+    cg = h5[crystal_path]
+    eg = h5[eval_path]
+
+    prop = prop.lower()
+
+    mappings = {
+        "freqs": ("frequencies_cm1", "frequencies_cm1"),
+        "frequencies": ("frequencies_cm1", "frequencies_cm1"),
+        "bec": ("born_charges", "bec_asr"),
+        "born": ("born_charges", "bec_asr"),
+        "intensities": ("intensities_km_mol", "intensities"),
+        "imag_flags": ("imag_flags", "imag_flags"),
+        "eigvals": ("eigvals_SI", "eigvals_SI"),
+        "eigvecs": ("eigvecs_mw", "eigvecs_mw"),
+    }
+
+    if prop not in mappings:
+        raise ValueError(
+            f"Unknown property: {prop}. "
+            f"Available: {', '.join(sorted(mappings))}"
+        )
+
+    ref_name, model_name = mappings[prop]
+
+    ref = read_dataset(cg, ref_name)
+    model = read_dataset(eg, model_name)
+
+    print("=" * 80)
+    print("COMPARE")
+    print("=" * 80)
+    print(f"structure : {structure}")
+    print(f"split     : {split}")
+    print(f"sweep_id  : {sweep_id}")
+    print(f"run_id    : {run_id}")
+    print(f"property  : {prop}")
+    print(f"reference : {crystal_path}/{ref_name}")
+    print(f"model     : {eval_path}/{model_name}")
+    print()
+
+    if fmt == "auto":
+        if prop in {"freqs", "frequencies"}:
+            fmt = "table"
+        elif prop in {"bec", "born", "eigvecs"}:
+            fmt = "summary"
+        else:
+            fmt = "summary"
+
+    if fmt == "arrays":
+        print_array("reference", ref)
+        print()
+        print_array("model", model)
+        return
+
+    if prop in {"freqs", "frequencies"} and fmt == "table":
+        print_frequency_comparison(ref, model)
+        return
+
+    compare_numeric_arrays(ref, model, label=prop)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Inspect and sanity-check ref_db.h5.")
     parser.add_argument("--ref_db", type=Path, default=REF_PATH, help="Path to ref_db.h5")
@@ -265,6 +422,22 @@ def main():
     parser.add_argument("--summary", action="store_true", help="Print compact structure summary")
     parser.add_argument("--details", action="store_true", help="Print full recursive DB details")
     parser.add_argument("--evaluations", action="store_true", help="Print compact evaluation table")
+    parser.add_argument("--compare", action="store_true", help="Compare model property against CRYSTAL reference")
+    parser.add_argument("--split", default=None, help="Dataset split for comparison")
+    parser.add_argument("--sweep_id", default=None, help="Sweep id for comparison")
+    parser.add_argument("--run_id", default=None, help="Run id / model id for comparison")
+    parser.add_argument(
+        "--property",
+        default="freqs",
+        help="Property to compare: freqs, bec, intensities, imag_flags, eigvals, eigvecs",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["auto", "table", "summary", "arrays"],
+        default="auto",
+        help="Comparison output format",
+    )
+
     args = parser.parse_args()
 
     with h5py.File(args.ref_db, "r") as h5:
@@ -286,6 +459,31 @@ def main():
         for structure in selected:
             if structure not in structures:
                 raise KeyError(f"Structure not found: {structure}")
+
+        if args.compare:
+            required = {
+                "--structure": args.structure,
+                "--split": args.split,
+                "--sweep_id": args.sweep_id,
+                "--run_id": args.run_id,
+            }
+
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise ValueError(
+                    f"--compare requires: {', '.join(missing)}"
+                )
+
+            compare_property(
+                h5,
+                structure=args.structure,
+                split=args.split,
+                sweep_id=args.sweep_id,
+                run_id=args.run_id,
+                prop=args.property,
+                fmt=args.format,
+            )
+            return
 
         if args.details:
             for structure in selected:

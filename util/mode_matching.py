@@ -642,7 +642,7 @@ def compare_mode_sets(
     evecs_crys: np.ndarray,
     mace_modes: dict,
     skip_first: int = 3,
-    degeneracy_tol: float = 1.0,
+    degeneracy_tol: float = 0.5,
     heatmap_outfile: str | Path | None = None,
     title: str = "CRYSTAL vs MACE mode overlap",
     crystal_extra: dict | None = None,
@@ -747,7 +747,7 @@ def run_mode_comparison(
     freq_out_path: str | Path,
     crystal_hessian_units: str = "hartree/bohr^2",
     skip_first: int = 3,
-    degeneracy_tol: float = 1.0,
+    degeneracy_tol: float = 0.5,
     heatmap_outfile: str | Path | None = None,
     title: str = "CRYSTAL vs MACE mode overlap",
 ):
@@ -812,7 +812,7 @@ def run_mode_comparison_from_ref_db(
     mace_modes: dict,
     atoms: Atoms | None = None,
     skip_first: int = 3,
-    degeneracy_tol: float = 1.0,
+    degeneracy_tol: float = 0.5,
     heatmap_outfile: str | Path | None = None,
     title: str | None = None,
 ):

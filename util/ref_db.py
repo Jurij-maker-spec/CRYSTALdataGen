@@ -128,6 +128,28 @@ def model_evaluation_exists(
         return True
 
 
+def update_model_ranking_metrics(
+    ref_db_path,
+    structure,
+    run_id,
+    dataset_split,
+    sweep_id,
+    ranking_metrics,
+):
+    path = model_evaluation_group_path(structure, dataset_split, sweep_id, run_id)
+
+    with h5py.File(ref_db_path, "a") as h5:
+        if path not in h5:
+            raise KeyError(f"Missing model evaluation group: {path}")
+
+        eg = h5[path]
+
+        if "ranking_metrics" in eg:
+            del eg["ranking_metrics"]
+
+        rg = eg.create_group("ranking_metrics")
+        write_attrs(rg, ranking_metrics)
+
 
 #################################################################
 # Writers

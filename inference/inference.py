@@ -374,8 +374,11 @@ def make_composite_score(
 ) -> tuple[float | None, dict]:
     """
     Lower is better.
-    Returns total score and individual score contributions.
+
+    Missing metrics receive a penalty so incomplete evaluations
+    cannot rank artificially well.
     """
+
     components = {
         "freq_mae_term": None,
         "freq_weighted_term": None,
@@ -386,41 +389,65 @@ def make_composite_score(
         "total": None,
     }
 
-    if (
-        freq_mae_ir_cm1 is None
-        and spectrum_rel_l2 is None
-        and mean_mode_overlap is None
-        and mean_subspace_overlap is None
-    ):
-        return None, components
-
     score = 0.0
 
+    # ------------------------------------------------------------
+    # Frequency accuracy
+    # ------------------------------------------------------------
+
     if freq_mae_ir_cm1 is not None:
-        components["freq_mae_term"] = 3.0 * float(freq_mae_ir_cm1)
-        score += components["freq_mae_term"]
+        components["freq_mae_term"] = 1.0 * float(freq_mae_ir_cm1)
+    else:
+        components["freq_mae_term"] = 50.0
+    score += components["freq_mae_term"]
 
     if freq_mae_ir_weighted_cm1 is not None:
-        components["freq_weighted_term"] = 2.0 * float(freq_mae_ir_weighted_cm1)
-        score += components["freq_weighted_term"]
+        components["freq_weighted_term"] = 1.0 * float(freq_mae_ir_weighted_cm1)
+    else:
+        components["freq_weighted_term"] = 50.0
+    score += components["freq_weighted_term"]
+
+    # ------------------------------------------------------------
+    # Spectrum agreement (strongly weighted)
+    # ------------------------------------------------------------
 
     if spectrum_rel_l2 is not None:
-        components["spectrum_l2_term"] = 20.0 * float(spectrum_rel_l2)
-        score += components["spectrum_l2_term"]
+        components["spectrum_l2_term"] = 60.0 * float(spectrum_rel_l2)
+    else:
+        components["spectrum_l2_term"] = 40.0
+    score += components["spectrum_l2_term"]
+
+    # ------------------------------------------------------------
+    # Intensity correlation
+    # ------------------------------------------------------------
 
     if intensity_pearson_r is not None:
-        components["intensity_corr_term"] = 10.0 * (1.0 - float(intensity_pearson_r))
+        components["intensity_corr_term"] = 10.0 * (
+            1.0 - float(intensity_pearson_r)
+        )
     else:
         components["intensity_corr_term"] = 10.0
     score += components["intensity_corr_term"]
 
+    # ------------------------------------------------------------
+    # Mode matching
+    # ------------------------------------------------------------
+
     if mean_subspace_overlap is not None:
-        components["subspace_overlap_term"] = 20.0 * (1.0 - float(mean_subspace_overlap))
-        score += components["subspace_overlap_term"]
+        components["subspace_overlap_term"] = 20.0 * (
+            1.0 - float(mean_subspace_overlap)
+        )
+    else:
+        components["subspace_overlap_term"] = 20.0
+    score += components["subspace_overlap_term"]
 
     if mean_mode_overlap is not None:
-        components["mode_overlap_term"] = 10.0 * (1.0 - float(mean_mode_overlap))
-        score += components["mode_overlap_term"]
+        components["mode_overlap_term"] = 10.0 * (
+            1.0 - float(mean_mode_overlap)
+        )
+    else:
+        components["mode_overlap_term"] = 10.0
+    score += components["mode_overlap_term"]
 
     components["total"] = float(score)
 
@@ -609,7 +636,7 @@ def run_crystal_mode_comparison(
         enabled: bool = False, 
         crystal_hessian_units: str = DEFAULT_CRYSTAL_HESSIAN_UNITS, 
         skip_first: int = 3, 
-        degeneracy_tol: float = 1.0,
+        degeneracy_tol: float = 0.5,
         ref_db_path: str | Path | None = None,
         use_ref_db: bool = True,
     ) -> dict:
@@ -835,6 +862,25 @@ def rebuild_summary_and_plots_from_cached_eval(
 
     ranking_metrics = dict(cached.get("ranking_metrics", {}))
 
+    composite_score, score_components = make_composite_score(
+    freq_mae_ir_cm1=ranking_metrics.get("freq_mae_ir_cm1"),
+    freq_mae_ir_weighted_cm1=ranking_metrics.get("freq_mae_ir_weighted_cm1"),
+    spectrum_rel_l2=ranking_metrics.get("spectrum_rel_l2"),
+    intensity_pearson_r=ranking_metrics.get("intensity_pearson_r"),
+    mean_mode_overlap=ranking_metrics.get("crystal_mode_mean_overlap"),
+    mean_subspace_overlap=ranking_metrics.get("crystal_mode_mean_subspace_overlap"),
+    )
+    ranking_metrics.update({
+        "composite_score": composite_score,
+        "score_freq_mae_term": score_components["freq_mae_term"],
+        "score_freq_weighted_term": score_components["freq_weighted_term"],
+        "score_spectrum_l2_term": score_components["spectrum_l2_term"],
+        "score_intensity_corr_term": score_components["intensity_corr_term"],
+        "score_subspace_overlap_term": score_components["subspace_overlap_term"],
+        "score_mode_overlap_term": score_components["mode_overlap_term"],
+        "score_total": score_components["total"],
+    })
+
     summary = {
         "structure": structure,
         "model_path": model_path,
@@ -911,7 +957,7 @@ def evaluate_model(
     crystal_structures_root: str | Path = DEFAULT_CRYSTAL_STRUCTURES_ROOT,
     crystal_hessian_units: str = DEFAULT_CRYSTAL_HESSIAN_UNITS,
     mode_skip_first: int = 3,
-    mode_degeneracy_tol: float = 1.0,
+    mode_degeneracy_tol: float = 0.5,
     run_phonopy=False,
     phonopy_plugin=None,
     write_ref_db: bool = False,
