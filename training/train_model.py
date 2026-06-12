@@ -234,6 +234,17 @@ def run_subprocess(
     return result
 
 
+def collect_run_hyperparams(cfg):
+    run_hyperparams = {
+        "batch_size": cfg.get("batch_size", None),
+        "energy_weight": cfg.get("energy_weight", None),
+        "force_weight": cfg.get("force_weight", None),
+        "r_max": cfg.get("r_max", None),
+        "seed": cfg.get("seed", None),
+
+    }
+    return run_hyperparams
+
 # ============================================================
 # CORE
 # ============================================================
@@ -245,6 +256,11 @@ def run_training_from_config(run_config_path: str | Path) -> dict[str, Any]:
 
     if not cfg.get("run_name"):
         cfg["run_name"] = make_run_name(cfg)
+
+    try:
+        hyperparams = collect_run_hyperparams(cfg)
+    except Exception as e:
+        hyperparams = f"failed {e}"
 
     paths = build_paths(cfg)
     prepare_directories(paths)
@@ -331,6 +347,7 @@ def run_training_from_config(run_config_path: str | Path) -> dict[str, Any]:
             "checkpoint_dir": paths["checkpoint_dir"],
             "train_log": paths["train_log"],
             "extract_log": paths["extract_log"],
+            "train_hyperparams": hyperparams,      # Added 12.06
             "trained_model_path": trained_model_path,
             "deploy_model_path": deploy_model_path,
             "train_returncode": train_result.returncode,

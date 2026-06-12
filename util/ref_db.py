@@ -13,6 +13,99 @@ import numpy as np
 # Helpers
 #################################################################
 
+def parse_hyperparams_from_run_id(run_id: str) -> dict[str, Any]:
+    """
+    Parse common sweep hyperparameters from run names like:
+
+        MACELES_bs2_ep173_ew1_fw75_rmax4_seed2_SiO2_n1400
+
+    Returns keys only when they are found:
+        batch_size, max_epochs, energy_weight, forces_weight,
+        r_max, seed, train_size
+    """
+    run_id = str(run_id)
+
+    patterns = {
+        "batch_size": r"(?:^|_)bs(?P<value>[0-9]+)(?:_|$)",
+        "max_epochs": r"(?:^|_)ep(?P<value>[0-9]+)(?:_|$)",
+        "energy_weight": r"(?:^|_)ew(?P<value>[0-9]+(?:p[0-9]+)?|[0-9]+(?:\.[0-9]+)?)(?:_|$)",
+        "forces_weight": r"(?:^|_)fw(?P<value>[0-9]+(?:p[0-9]+)?|[0-9]+(?:\.[0-9]+)?)(?:_|$)",
+        "r_max": r"(?:^|_)rmax(?P<value>[0-9]+(?:p[0-9]+)?|[0-9]+(?:\.[0-9]+)?)(?:_|$)",
+        "seed": r"(?:^|_)seed(?P<value>[0-9]+)(?:_|$)",
+        "train_size": r"(?:^|_)n(?P<value>[0-9]+)(?:_|$)",
+    }
+
+    int_keys = {"batch_size", "max_epochs", "seed", "train_size"}
+    out: dict[str, Any] = {}
+
+    for key, pattern in patterns.items():
+        m = re.search(pattern, run_id)
+        if m is None:
+            continue
+
+        raw = m.group("value").replace("p", ".")
+
+        if key in int_keys:
+            out[key] = int(raw)
+        else:
+            out[key] = float(raw)
+
+    return out
+
+
+def format_hyperparams(
+    hyperparameters: dict[str, Any] | None,
+    *,
+    keys: tuple[str, ...] = (
+        "r_max",
+        "energy_weight",
+        "forces_weight",
+        "seed",
+        "train_size",
+        "batch_size",
+        "max_epochs",
+    ),
+) -> str:
+    """
+    Compact plot-safe hyperparameter string.
+
+    Avoid underscores because your Matplotlib style may use text.usetex=True.
+    """
+    if not hyperparameters:
+        return ""
+
+    labels = {
+        "r_max": "rmax",
+        "energy_weight": "ew",
+        "forces_weight": "fw",
+        "seed": "seed",
+        "train_size": "n",
+        "batch_size": "bs",
+        "max_epochs": "ep",
+    }
+
+    parts = []
+
+    for key in keys:
+        if key not in hyperparameters:
+            continue
+
+        value = hyperparameters[key]
+
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+
+        if isinstance(value, np.generic):
+            value = value.item()
+
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+
+        parts.append(f"{labels.get(key, key)} {value}")
+
+    return ", ".join(parts)
+
+
 def fix_label_case(label):
     """Convert an atomic label like FE1 -> Fe1 or SI2 -> Si."""
     match = re.match(r"([A-Za-z]+)([0-9]*)", label)
@@ -151,6 +244,52 @@ def update_model_ranking_metrics(
         write_attrs(rg, ranking_metrics)
 
 
+def backfill_hyperparameters_from_run_ids(
+    ref_db_path: str | Path,
+    *,
+    structure: str | None = None,
+    overwrite: bool = False,
+) -> None:
+    """
+    Backfill /hyperparameters attrs for old model evaluations by parsing run_id.
+
+    This assumes parse_hyperparams_from_run_id(run_id) exists.
+    """
+    ref_db_path = Path(ref_db_path)
+
+    with h5py.File(ref_db_path, "a") as h5:
+        structures_root = h5["structures"]
+
+        structure_names = [structure] if structure is not None else list(structures_root.keys())
+
+        for structure_name in structure_names:
+            eval_root_path = f"structures/{structure_name}/evaluations"
+
+            if eval_root_path not in h5:
+                continue
+
+            eval_root = h5[eval_root_path]
+
+            for split_name, split_group in eval_root.items():
+                for sweep_name, sweep_group in split_group.items():
+                    for run_id, run_group in sweep_group.items():
+                        if "hyperparameters" in run_group and not overwrite:
+                            continue
+
+                        hp = parse_hyperparams_from_run_id(run_id)
+
+                        if not hp:
+                            print(f"SKIP no parsed hyperparams: {structure_name}/{run_id}")
+                            continue
+
+                        write_hyperparameters(run_group, hp)
+
+                        print(
+                            f"backfilled {structure_name} / {split_name} / "
+                            f"{sweep_name} / {run_id}: {hp}"
+                        )
+
+
 #################################################################
 # Writers
 #################################################################
@@ -273,6 +412,7 @@ def write_model_evaluation(
     ir_matching=None,
     ranking_metrics: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
+    hyperparameters: dict[str, Any] | None = None,
 ):
     ref_db_path = ensure_parent(ref_db_path)
 
@@ -325,6 +465,7 @@ def write_model_evaluation(
             rg = eg.create_group("ranking_metrics")
             write_attrs(rg, ranking_metrics)
 
+        write_hyperparameters(eg, hyperparameters)
         write_attrs(eg, metadata)
 
         eg.attrs["schema"] = "model_evaluation_v1"
@@ -504,6 +645,25 @@ def write_ir_matching(group: h5py.Group, ir_matching: dict[str, Any] | None):
 
     write_scalar_summary_group(ig, "summaries", summary)
 
+
+def write_hyperparameters(group: h5py.Group, hyperparameters: dict[str, Any] | None):
+    """
+    Store training/sweep hyperparameters as attrs in a dedicated subgroup.
+
+    Expected examples:
+        r_max
+        energy_weight
+        forces_weight
+        seed
+        batch_size
+        max_epochs
+        train_size
+    """
+    if not hyperparameters:
+        return
+
+    hg = overwrite_group(group, "hyperparameters")
+    write_attrs(hg, hyperparameters)
 
 
 #################################################################
@@ -812,6 +972,7 @@ def read_model_evaluation(
                 dtype=float,
             ),
             "ranking_metrics": _read_attrs_if_exists(eg, "ranking_metrics"),
+            "hyperparameters": read_hyperparameters_from_group(eg, run_id),
         }
 
         optional_arrays = [
@@ -925,3 +1086,174 @@ def read_mode_overlap(
 
         return out
     
+
+def read_hyperparameters_from_group(group: h5py.Group, run_id: str | None = None) -> dict[str, Any]:
+    """
+    Read stored hyperparameters from a model evaluation group.
+
+    Priority:
+        1. /hyperparameters attrs
+        2. selected run-level attrs, for backwards compatibility
+        3. optional run_id parsing fallback, if parse_hyperparams_from_run_id exists
+    """
+    hp: dict[str, Any] = {}
+
+    if "hyperparameters" in group:
+        hp.update(dict(group["hyperparameters"].attrs))
+
+    # Backwards compatibility if some params were stored as attrs.
+    attr_aliases = {
+        "r_max": ["r_max", "rmax"],
+        "energy_weight": ["energy_weight", "ew"],
+        "forces_weight": ["forces_weight", "fw"],
+        "seed": ["seed"],
+        "batch_size": ["batch_size", "bs"],
+        "max_epochs": ["max_epochs", "epochs", "ep"],
+        "train_size": ["train_size", "n_train", "dataset_size"],
+    }
+
+    for canonical, aliases in attr_aliases.items():
+        if canonical in hp:
+            continue
+        for key in aliases:
+            if key in group.attrs:
+                hp[canonical] = group.attrs[key]
+                break
+
+    # Optional fallback for old DBs. Only use if you added this parser.
+    if run_id is not None and "parse_hyperparams_from_run_id" in globals():
+        parsed = parse_hyperparams_from_run_id(run_id)
+        for key, value in parsed.items():
+            hp.setdefault(key, value)
+
+    return hp
+
+
+def _metric_sort_direction(metric: str) -> bool:
+    """
+    Return True if lower metric values are better.
+    """
+    lower_is_better = {
+        "composite_score",
+        "spectrum_rel_l2",
+        "freq_mae_ir_cm1",
+        "freq_rmse_ir_cm1",
+        "freq_mae_ir_weighted_cm1",
+        "peak_position_score",
+        "peak_count_score",
+    }
+
+    higher_is_better = {
+        "intensity_pearson_r",
+        "intensity_spearman_r",
+        "mean_mode_overlap",
+        "min_mode_overlap",
+        "mean_subspace_overlap",
+        "min_subspace_overlap",
+        "diagonal_overlap_mean",
+    }
+
+    if metric in lower_is_better:
+        return True
+
+    if metric in higher_is_better:
+        return False
+
+    return True
+
+
+def list_model_evaluations_for_structure(
+    ref_db_path: str | Path,
+    structure: str,
+    *,
+    metric: str = "composite_score",
+    require_ir_spectrum: bool = True,
+    require_metric: bool = True,
+    sort: bool = True,
+) -> list[dict[str, Any]]:
+    """
+    List cached model evaluations for one structure.
+
+    Returns lightweight rows with split/sweep/run identifiers, ranking metrics,
+    and hyperparameters. The full spectra are then loaded with
+    read_model_evaluation(...).
+    """
+    ref_db_path = Path(ref_db_path)
+    rows: list[dict[str, Any]] = []
+
+    with h5py.File(ref_db_path, "r") as h5:
+        eval_root_path = f"structures/{structure}/evaluations"
+
+        if eval_root_path not in h5:
+            raise KeyError(f"Missing evaluations group: {eval_root_path}")
+
+        eval_root = h5[eval_root_path]
+
+        for dataset_split, split_group in eval_root.items():
+            if not isinstance(split_group, h5py.Group):
+                continue
+
+            for sweep_id, sweep_group in split_group.items():
+                if not isinstance(sweep_group, h5py.Group):
+                    continue
+
+                for run_id, run_group in sweep_group.items():
+                    if not isinstance(run_group, h5py.Group):
+                        continue
+
+                    if require_ir_spectrum:
+                        has_ir = (
+                            "ir_spectrum" in run_group
+                            and "nu_grid_cm1" in run_group["ir_spectrum"]
+                            and "intensity_relative" in run_group["ir_spectrum"]
+                        )
+                        if not has_ir:
+                            continue
+
+                    ranking_metrics = {}
+                    if "ranking_metrics" in run_group:
+                        ranking_metrics = dict(run_group["ranking_metrics"].attrs)
+
+                    metric_value = ranking_metrics.get(metric, None)
+
+                    if metric_value is None and metric in run_group.attrs:
+                        metric_value = run_group.attrs[metric]
+
+                    if metric_value is None:
+                        if require_metric:
+                            continue
+                    else:
+                        metric_value = float(metric_value)
+
+                    # Preferred: stored hyperparameters.
+                    # Fallback logic should live in read_hyperparameters_from_group(...).
+                    hyperparameters = read_hyperparameters_from_group(
+                        run_group,
+                        run_id=str(run_id),
+                    )
+
+                    rows.append({
+                        "structure": structure,
+                        "dataset_split": str(dataset_split),
+                        "sweep_id": str(sweep_id),
+                        "run_id": str(run_id),
+                        "metric": metric,
+                        "metric_value": metric_value,
+                        "ranking_metrics": ranking_metrics,
+                        "hyperparameters": hyperparameters,
+                        "hyperparam_label": format_hyperparams(hyperparameters),
+                        "attrs": dict(run_group.attrs),
+                    })
+
+    if sort:
+        lower_is_better = _metric_sort_direction(metric)
+
+        rows = sorted(
+            rows,
+            key=lambda r: (
+                np.inf if r["metric_value"] is None else r["metric_value"]
+            ),
+            reverse=not lower_is_better,
+        )
+
+    return rows

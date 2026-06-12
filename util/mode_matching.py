@@ -6,9 +6,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import linear_sum_assignment
 from ase import Atoms
-import re
-import spglib
 import matplotlib as mpl
+from matplotlib.colors import ListedColormap
+import matplotlib.cm as cm
 from .phonons import diagonalize_hessian
 from .ref_db import (
     read_crystal_modes,
@@ -16,7 +16,13 @@ from .ref_db import (
     read_crystal_primitive_atoms_from_freq_out
 )
 mpl.style.use('/home/jha/jha/python_scripts/CRYSTALdataGen/util/style.mplstyle')
+CMAP = 'managua_r'
 
+def _slice_CMAP(cmap):
+    full_cmap = cm.get_cmap(cmap)
+    colors = full_cmap(np.linspace(0.4, 1.0, 512))
+    sliced_cmap = ListedColormap(colors)
+    return sliced_cmap
 
 def reorder_hessian(H, perm):
     """
@@ -361,7 +367,7 @@ def plot_mode_overlap_heatmap(
     outfile = Path(outfile)
 
     fig, ax = plt.subplots(figsize=(7, 6))
-    im = ax.imshow(O, origin="lower", aspect="auto", vmin=0.0, vmax=1.0)
+    im = ax.imshow(O, origin="lower", aspect="auto", vmin=0.0, vmax=1.0, cmap='managua')
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label(r"$| \langle u_\mathrm{ref} | u_\mathrm{test} \rangle |$", size=12)
 
@@ -405,7 +411,7 @@ def plot_group_overlap_heatmap(
     outfile = Path(outfile)
 
     fig, ax = plt.subplots(figsize=(7, 6))
-    im = ax.imshow(O, origin="lower", aspect="auto", vmin=0.0, vmax=1.0)
+    im = ax.imshow(O, origin="lower", aspect="auto", vmin=0.0, vmax=1.0, cmap='managua')
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("Subspace overlap", size=14)
 
@@ -493,15 +499,15 @@ def plot_combined_overlap_heatmaps(
     #   x = CRYSTAL
     #   y = MACE
     # ============================================================
-
+    cmap = _slice_CMAP(CMAP)
     ax = axes[0]
-
     im1 = ax.imshow(
         overlap_matrix.T,
         origin="lower",
         aspect="equal",
         vmin=0.0,
         vmax=1.0,
+        cmap=cmap
     )
 
     ax.set_xlabel(r"CRYSTAL modes in cm$^{-1}$")
@@ -548,6 +554,7 @@ def plot_combined_overlap_heatmaps(
         aspect="equal",
         vmin=0.0,
         vmax=1.0,
+        cmap=cmap
     )
 
     cbar2 = fig.colorbar(im2, ax=ax)

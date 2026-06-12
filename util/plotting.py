@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -6,7 +8,7 @@ from .ref_db import read_crystal_ir_reference
 
 mpl.style.use('/home/jha/jha/python_scripts/CRYSTALdataGen/util/style.mplstyle')
 
-CMAP = mpl.colormaps['viridis']
+CMAP = mpl.colormaps['managua']
 
 def gaussian_profile(x, x0=0, intensity=1, fwhm=400):
     sigma = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
@@ -234,7 +236,7 @@ def plot_ir_spectrum_with_frequency_correlation(
     ax1.plot(
         nu_grid,
         ir_spec,
-        lw=0.7,
+        lw=1.2,
         ls="--",
         label=f"MACELES {structure}",
         color=c[1],

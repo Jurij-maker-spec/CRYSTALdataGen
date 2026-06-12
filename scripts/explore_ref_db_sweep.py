@@ -154,6 +154,65 @@ def format_latex_number(value, digits=4):
     return f"{value:.{digits}g}"
 
 
+def safe_float(value, default=np.nan):
+    try:
+        value = float(value)
+    except Exception:
+        return default
+
+    if not np.isfinite(value):
+        return default
+
+    return value
+
+
+def safe_int(value, default=None):
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def median_or_nan(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) == 0:
+        return np.nan
+    return float(np.median(values))
+
+
+def mean_or_nan(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) == 0:
+        return np.nan
+    return float(np.mean(values))
+
+
+def std_or_nan(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) <= 1:
+        return np.nan
+    return float(np.std(values, ddof=1))
+
+
+def min_or_nan(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) == 0:
+        return np.nan
+    return float(np.min(values))
+
+
+def max_or_nan(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) == 0:
+        return np.nan
+    return float(np.max(values))
+
+
 def print_best_models(rows, n=7, metric="composite_score"):
     rows = [
         r for r in rows
@@ -242,6 +301,458 @@ def print_best_models(rows, n=7, metric="composite_score"):
     print(r"\end{table}")
 
 
+def print_hyperparameter_ranking(
+    rows,
+    metric="composite_score",
+    n_best=20,
+):
+    """
+    Rank hyperparameter combinations by median metric.
+
+    Hyperparameters screened:
+      r_max, energy_weight, forces_weight
+
+    train_size is not used for grouping yet.
+    It is only printed as additional information if available.
+    """
+    required = ["r_max", "energy_weight", "forces_weight", metric]
+
+    clean_rows = []
+    for r in rows:
+        if not all(k in r for k in required):
+            continue
+
+        score = safe_float(r.get(metric))
+        if not np.isfinite(score):
+            continue
+
+        clean_rows.append(r)
+
+    if not clean_rows:
+        print()
+        print(f"No rows available for hyperparameter ranking with metric: {metric}")
+        return
+
+    groups = {}
+
+    for r in clean_rows:
+        key = (
+            safe_float(r["r_max"]),
+            safe_float(r["energy_weight"]),
+            safe_float(r["forces_weight"]),
+        )
+
+        if key not in groups:
+            groups[key] = []
+
+        groups[key].append(r)
+
+    records = []
+
+    global_best = min_or_nan([safe_float(r.get(metric)) for r in clean_rows])
+    succes_multiplier = 2.3
+    success_threshold = succes_multiplier * global_best
+
+    for (r_max, ew, fw), group_rows in groups.items():
+        scores = [safe_float(r.get(metric)) for r in group_rows]
+
+        freq_mae = [safe_float(r.get("freq_mae_ir_cm1")) for r in group_rows]
+        spec_l2 = [safe_float(r.get("spectrum_rel_l2")) for r in group_rows]
+        int_r = [safe_float(r.get("intensity_pearson_r")) for r in group_rows]
+
+        overlap_values = []
+        for r in group_rows:
+            overlap = safe_float(r.get("crystal_mode_mean_overlap"))
+            if not np.isfinite(overlap):
+                overlap = safe_float(r.get("diagonal_overlap_mean"))
+            if np.isfinite(overlap):
+                overlap_values.append(overlap)
+
+        train_sizes = []
+        for r in group_rows:
+            ts = safe_int(r.get("train_size"))
+            if ts is not None:
+                train_sizes.append(ts)
+
+        splits = sorted(set(str(r.get("split", "--")) for r in group_rows))
+        seeds = sorted(set(safe_int(r.get("seed")) for r in group_rows if safe_int(r.get("seed")) is not None))
+
+        n_success = sum(
+            safe_float(r.get(metric)) <= success_threshold
+            for r in group_rows
+        )
+
+        record = {
+            "r_max": r_max,
+            "energy_weight": ew,
+            "forces_weight": fw,
+            "n_runs": len(group_rows),
+            "n_splits": len(splits),
+            "n_seeds": len(seeds),
+            "train_size_min": min(train_sizes) if train_sizes else None,
+            "train_size_max": max(train_sizes) if train_sizes else None,
+            "median_score": median_or_nan(scores),
+            "mean_score": mean_or_nan(scores),
+            "std_score": std_or_nan(scores),
+            "best_score": min_or_nan(scores),
+            "worst_score": max_or_nan(scores),
+            "success_rate": n_success / len(group_rows),
+            "median_freq_mae": median_or_nan(freq_mae),
+            "median_spectrum_l2": median_or_nan(spec_l2),
+            "median_intensity_r": median_or_nan(int_r),
+            "median_overlap": median_or_nan(overlap_values),
+        }
+
+        records.append(record)
+
+    records = sorted(
+        records,
+        key=lambda r: (
+            r["median_score"],
+            r["mean_score"],
+            r["std_score"] if np.isfinite(r["std_score"]) else np.inf,
+        ),
+    )
+
+    print()
+    print("=" * 130)
+    print(f"HYPERPARAMETER RANKING BY MEDIAN {metric}")
+    print("=" * 130)
+    print(f"global best score : {global_best:.6g}")
+    print(f"success threshold : {success_threshold:.6g}  (= {succes_multiplier} * global best)")
+    print()
+
+    header = (
+        f"{'#':>3} "
+        f"{'r_max':>7} "
+        f"{'ew':>7} "
+        f"{'fw':>7} "
+        f"{'n':>5} "
+        f"{'splits':>7} "
+        f"{'seeds':>6} "
+        f"{'Ntrain':>15} "
+        f"{'median':>10} "
+        f"{'mean':>10} "
+        f"{'std':>10} "
+        f"{'best':>10} "
+        f"{'succ.':>8} "
+        f"{'freqMAE':>10} "
+        f"{'specL2':>10} "
+        f"{'intR':>8} "
+        f"{'overlap':>9}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for i, r in enumerate(records[:n_best], start=1):
+        if r["train_size_min"] is None:
+            train_size_text = "--"
+        elif r["train_size_min"] == r["train_size_max"]:
+            train_size_text = f"{r['train_size_min']}"
+        else:
+            train_size_text = f"{r['train_size_min']}-{r['train_size_max']}"
+
+        print(
+            f"{i:>3d} "
+            f"{r['r_max']:>7.3g} "
+            f"{r['energy_weight']:>7.3g} "
+            f"{r['forces_weight']:>7.3g} "
+            f"{r['n_runs']:>5d} "
+            f"{r['n_splits']:>7d} "
+            f"{r['n_seeds']:>6d} "
+            f"{train_size_text:>15} "
+            f"{r['median_score']:>10.4g} "
+            f"{r['mean_score']:>10.4g} "
+            f"{r['std_score']:>10.4g} "
+            f"{r['best_score']:>10.4g} "
+            f"{100.0 * r['success_rate']:>7.1f}% "
+            f"{r['median_freq_mae']:>10.4g} "
+            f"{r['median_spectrum_l2']:>10.4g} "
+            f"{r['median_intensity_r']:>8.3g} "
+            f"{r['median_overlap']:>9.3g}"
+        )
+
+    print()
+    print("LATEX TABLE")
+    print("-" * 130)
+
+    print(r"\begin{table}[ht]")
+    print(r"\centering")
+    print(r"\begin{tabular}{rrrrrrrrrrr}")
+    print(r"\hline")
+    print(
+        r"$r_\mathrm{max}$ & $w_E$ & $w_F$ & $n$ & $N_\mathrm{train}$ & "
+        r"median & mean & std & best & freq. MAE & $r_I$ \\"
+    )
+    print(r"\hline")
+
+    for r in records[:n_best]:
+        if r["train_size_min"] is None:
+            train_size_text = "--"
+        elif r["train_size_min"] == r["train_size_max"]:
+            train_size_text = str(r["train_size_min"])
+        else:
+            train_size_text = f"{r['train_size_min']}--{r['train_size_max']}"
+
+        print(
+            f"{format_latex_number(r['r_max'], 3)} & "
+            f"{format_latex_number(r['energy_weight'], 3)} & "
+            f"{format_latex_number(r['forces_weight'], 3)} & "
+            f"{r['n_runs']} & "
+            f"{train_size_text} & "
+            f"{format_latex_number(r['median_score'], 4)} & "
+            f"{format_latex_number(r['mean_score'], 4)} & "
+            f"{format_latex_number(r['std_score'], 3)} & "
+            f"{format_latex_number(r['best_score'], 4)} & "
+            f"{format_latex_number(r['median_freq_mae'], 4)} & "
+            f"{format_latex_number(r['median_intensity_r'], 3)} \\\\"
+        )
+
+    print(r"\hline")
+    print(r"\end{tabular}")
+    print(
+        r"\caption{Hyperparameter ranking grouped by cutoff radius, "
+        r"energy weight, and force weight. Scores are aggregated over "
+        r"available seeds, splits, sweeps, and training-set sizes.}"
+    )
+    print(r"\label{tab:hyperparameter_ranking}")
+    print(r"\end{table}")
+
+
+def print_pooled_hyperparameter_ranking(
+    rows,
+    metric="composite_score",
+):
+    """
+    Main-effect / pooled hyperparameter ranking.
+
+    For each parameter separately:
+      r_max
+      energy_weight
+      forces_weight
+
+    Pool over all other parameters, seeds, splits, sweeps, and train sizes.
+    """
+
+    parameters = [
+        ("r_max", r"$r_\mathrm{max}$"),
+        ("energy_weight", r"$w_E$"),
+        ("forces_weight", r"$w_F$"),
+    ]
+
+    clean_rows = []
+    for r in rows:
+        score = safe_float(r.get(metric))
+        if not np.isfinite(score):
+            continue
+        clean_rows.append(r)
+
+    if not clean_rows:
+        print()
+        print(f"No rows available for pooled hyperparameter ranking with metric: {metric}")
+        return
+
+    global_best = min_or_nan([safe_float(r.get(metric)) for r in clean_rows])
+    success_multiplier = 2.3
+    success_threshold = success_multiplier * global_best
+
+    print()
+    print("=" * 120)
+    print(f"POOLED HYPERPARAMETER EFFECTS BY {metric}")
+    print("=" * 120)
+    print(f"global best score : {global_best:.6g}")
+    print(f"success threshold : {success_threshold:.6g}  (= {success_multiplier} * global best)")
+    print()
+
+    pooled_best = {}
+
+    for param, latex_name in parameters:
+        groups = {}
+
+        for r in clean_rows:
+            if param not in r:
+                continue
+
+            value = safe_float(r.get(param))
+            if not np.isfinite(value):
+                continue
+
+            groups.setdefault(value, []).append(r)
+
+        if not groups:
+            continue
+
+        records = []
+
+        for value, group_rows in groups.items():
+            scores = [safe_float(r.get(metric)) for r in group_rows]
+
+            freq_mae = [safe_float(r.get("freq_mae_ir_cm1")) for r in group_rows]
+            spec_l2 = [safe_float(r.get("spectrum_rel_l2")) for r in group_rows]
+            int_r = [safe_float(r.get("intensity_pearson_r")) for r in group_rows]
+
+            overlap_values = []
+            for r in group_rows:
+                overlap = safe_float(r.get("crystal_mode_mean_overlap"))
+                if not np.isfinite(overlap):
+                    overlap = safe_float(r.get("diagonal_overlap_mean"))
+                if np.isfinite(overlap):
+                    overlap_values.append(overlap)
+
+            train_sizes = []
+            for r in group_rows:
+                ts = safe_int(r.get("train_size"))
+                if ts is not None:
+                    train_sizes.append(ts)
+
+            splits = sorted(set(str(r.get("split", "--")) for r in group_rows))
+            seeds = sorted(
+                set(
+                    safe_int(r.get("seed"))
+                    for r in group_rows
+                    if safe_int(r.get("seed")) is not None
+                )
+            )
+
+            n_success = sum(
+                safe_float(r.get(metric)) <= success_threshold
+                for r in group_rows
+            )
+
+            record = {
+                "param": param,
+                "value": value,
+                "n_runs": len(group_rows),
+                "n_splits": len(splits),
+                "n_seeds": len(seeds),
+                "train_size_min": min(train_sizes) if train_sizes else None,
+                "train_size_max": max(train_sizes) if train_sizes else None,
+                "median_score": median_or_nan(scores),
+                "mean_score": mean_or_nan(scores),
+                "std_score": std_or_nan(scores),
+                "best_score": min_or_nan(scores),
+                "worst_score": max_or_nan(scores),
+                "success_rate": n_success / len(group_rows),
+                "median_freq_mae": median_or_nan(freq_mae),
+                "median_spectrum_l2": median_or_nan(spec_l2),
+                "median_intensity_r": median_or_nan(int_r),
+                "median_overlap": median_or_nan(overlap_values),
+            }
+
+            records.append(record)
+
+        records = sorted(
+            records,
+            key=lambda r: (
+                r["median_score"],
+                r["mean_score"],
+                r["std_score"] if np.isfinite(r["std_score"]) else np.inf,
+            ),
+        )
+
+        pooled_best[param] = records[0]
+
+        print()
+        print("-" * 120)
+        print(f"POOLED PARAMETER: {param}")
+        print("-" * 120)
+
+        header = (
+            f"{'value':>10} "
+            f"{'n':>5} "
+            f"{'splits':>7} "
+            f"{'seeds':>6} "
+            f"{'Ntrain':>15} "
+            f"{'median':>10} "
+            f"{'mean':>10} "
+            f"{'std':>10} "
+            f"{'best':>10} "
+            f"{'succ.':>8} "
+            f"{'freqMAE':>10} "
+            f"{'specL2':>10} "
+            f"{'intR':>8} "
+            f"{'overlap':>9}"
+        )
+        print(header)
+        print("-" * len(header))
+
+        for r in records:
+            if r["train_size_min"] is None:
+                train_size_text = "--"
+            elif r["train_size_min"] == r["train_size_max"]:
+                train_size_text = f"{r['train_size_min']}"
+            else:
+                train_size_text = f"{r['train_size_min']}-{r['train_size_max']}"
+
+            print(
+                f"{r['value']:>10.4g} "
+                f"{r['n_runs']:>5d} "
+                f"{r['n_splits']:>7d} "
+                f"{r['n_seeds']:>6d} "
+                f"{train_size_text:>15} "
+                f"{r['median_score']:>10.4g} "
+                f"{r['mean_score']:>10.4g} "
+                f"{r['std_score']:>10.4g} "
+                f"{r['best_score']:>10.4g} "
+                f"{100.0 * r['success_rate']:>7.1f}% "
+                f"{r['median_freq_mae']:>10.4g} "
+                f"{r['median_spectrum_l2']:>10.4g} "
+                f"{r['median_intensity_r']:>8.3g} "
+                f"{r['median_overlap']:>9.3g}"
+            )
+
+    print()
+    print("=" * 120)
+    print("BEST POOLED VALUES")
+    print("=" * 120)
+
+    for param in ["r_max", "energy_weight", "forces_weight"]:
+        if param not in pooled_best:
+            continue
+
+        r = pooled_best[param]
+        print(
+            f"{param:<15} = {r['value']:<8.4g} "
+            f"median={r['median_score']:.4g}, "
+            f"mean={r['mean_score']:.4g}, "
+            f"n={r['n_runs']}"
+        )
+
+    if all(k in pooled_best for k in ["r_max", "energy_weight", "forces_weight"]):
+        best_tuple = (
+            pooled_best["r_max"]["value"],
+            pooled_best["energy_weight"]["value"],
+            pooled_best["forces_weight"]["value"],
+        )
+
+        matching_rows = [
+            r for r in clean_rows
+            if np.isclose(safe_float(r.get("r_max")), best_tuple[0])
+            and np.isclose(safe_float(r.get("energy_weight")), best_tuple[1])
+            and np.isclose(safe_float(r.get("forces_weight")), best_tuple[2])
+        ]
+
+        print()
+        print("OVERLAP CHECK")
+        print("-" * 120)
+        print(
+            f"best pooled tuple: "
+            f"r_max={best_tuple[0]:g}, "
+            f"ew={best_tuple[1]:g}, "
+            f"fw={best_tuple[2]:g}"
+        )
+
+        if matching_rows:
+            scores = [safe_float(r.get(metric)) for r in matching_rows]
+            print(f"existing runs    : {len(matching_rows)}")
+            print(f"median score     : {median_or_nan(scores):.6g}")
+            print(f"mean score       : {mean_or_nan(scores):.6g}")
+            print(f"best score       : {min_or_nan(scores):.6g}")
+        else:
+            print("existing runs    : none")
+            print("interpretation   : best pooled values do not occur as one exact tuple")
+
+
 def add_if_numeric(store, key, value):
     try:
         value = float(value)
@@ -251,7 +762,15 @@ def add_if_numeric(store, key, value):
         store[key].append(value)
 
 
-def summarize_structure(h5, structure: str, include_all_splits: bool = False):
+def summarize_structure(
+    h5,
+    structure: str,
+    include_all_splits: bool = False,
+    rank_hyperparams: bool = False,
+    pool_hyperparams: bool = False,
+    rank_metric: str = "composite_score",
+    rank_top: int = 20,
+):
     all_runs = list(iter_evaluation_runs(h5, structure) or [])
     all_runs = list(iter_evaluation_runs(h5, structure) or [])
 
@@ -284,6 +803,7 @@ def summarize_structure(h5, structure: str, include_all_splits: bool = False):
 
         params = parse_run_id(run_id)
         split_info = parse_split_train_size(split, structure)
+
         train_size = params.get("train_size")
         if train_size is None:
             train_size = split_info.get("train_size_split")
@@ -308,8 +828,11 @@ def summarize_structure(h5, structure: str, include_all_splits: bool = False):
             "split": split,
             "sweep_id": sweep_id,
             "run_id": run_id,
+            **split_info,
             **params,
+            "train_size": train_size,
         }
+
 
         for key, value in metrics.items():
             try:
@@ -385,9 +908,20 @@ def summarize_structure(h5, structure: str, include_all_splits: bool = False):
         )
 
     print_best_models(model_rows, n=7, metric="composite_score")
+    if rank_hyperparams:
+        print_hyperparameter_ranking(
+            model_rows,
+            metric=rank_metric,
+            n_best=rank_top,
+        )
+    if pool_hyperparams:
+        print_pooled_hyperparameter_ranking(
+            model_rows,
+            metric=rank_metric,
+        )
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Explore available sweep parameters and metrics in ref_db.h5."
     )
@@ -400,6 +934,32 @@ def main():
         help="Include all splits under the structure group, including e.g. SiO2_PBE splits under SiO2.",
     )
 
+    parser.add_argument(
+        "--rank-hyperparams",
+        action="store_true",
+        help="Rank r_max, energy_weight, forces_weight combinations by median score.",
+    )
+    parser.add_argument(
+        "--rank-metric",
+        default="composite_score",
+        help="Metric used for hyperparameter ranking.",
+    )
+    parser.add_argument(
+        "--rank-top",
+        type=int,
+        default=20,
+        help="Number of hyperparameter combinations to print.",
+    )
+    parser.add_argument(
+        "--pool-hyperparams",
+        action="store_true",
+        help="Print pooled main-effect ranking for r_max, energy_weight, and forces_weight.",
+    )
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     with h5py.File(args.ref_db, "r") as h5:
@@ -413,6 +973,10 @@ def main():
             h5,
             args.structure,
             include_all_splits=args.include_all_splits,
+            pool_hyperparams=args.pool_hyperparams,
+            rank_hyperparams=args.rank_hyperparams,
+            rank_metric=args.rank_metric,
+            rank_top=args.rank_top,
         )
 
 

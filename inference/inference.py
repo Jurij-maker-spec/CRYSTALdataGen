@@ -960,6 +960,7 @@ def evaluate_model(
     mode_degeneracy_tol: float = 0.5,
     run_phonopy=False,
     phonopy_plugin=None,
+    hyperparameters: dict | None = None,
     write_ref_db: bool = False,
     ref_db_path: str | Path | None = None,
     run_id: str | None = None,
@@ -1342,6 +1343,7 @@ def evaluate_model(
                         "fmax": fmax,
                         "compare_crystal_modes": compare_crystal_modes,
                     },
+                    hyperparameters=hyperparameters
                 )
 
                 summary["ref_db"]["write_status"] = "ok"
