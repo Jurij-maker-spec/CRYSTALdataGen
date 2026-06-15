@@ -315,7 +315,6 @@ def _position_text(ax, score, true_rank, fs=18, offset=1.1, base_x=0.01):
 
 
 
-
 def plot_hse_pbe_ir_grid(
     *,
     ref_db: Path,

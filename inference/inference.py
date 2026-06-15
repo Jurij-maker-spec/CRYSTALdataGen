@@ -411,11 +411,11 @@ def make_composite_score(
     # Spectrum agreement (strongly weighted)
     # ------------------------------------------------------------
 
-    if spectrum_rel_l2 is not None:
-        components["spectrum_l2_term"] = 60.0 * float(spectrum_rel_l2)
-    else:
-        components["spectrum_l2_term"] = 40.0
-    score += components["spectrum_l2_term"]
+    # if spectrum_rel_l2 is not None:
+    #     components["spectrum_l2_term"] = 60.0 * float(spectrum_rel_l2)
+    # else:
+    #     components["spectrum_l2_term"] = 40.0
+    # score += components["spectrum_l2_term"]
 
     # ------------------------------------------------------------
     # Intensity correlation
@@ -441,15 +441,20 @@ def make_composite_score(
         components["subspace_overlap_term"] = 20.0
     score += components["subspace_overlap_term"]
 
-    if mean_mode_overlap is not None:
-        components["mode_overlap_term"] = 10.0 * (
-            1.0 - float(mean_mode_overlap)
-        )
-    else:
-        components["mode_overlap_term"] = 10.0
-    score += components["mode_overlap_term"]
+    # if mean_mode_overlap is not None:
+    #     components["mode_overlap_term"] = 10.0 * (
+    #         1.0 - float(mean_mode_overlap)
+    #     )
+    # else:
+    #     components["mode_overlap_term"] = 10.0
+    # score += components["mode_overlap_term"]
+
+    print(f"Total composite score {score}")
+    for key, val in components:
+        print(f"---> key {key:20} val: {val:5.2f} ")
 
     components["total"] = float(score)
+
 
     return float(score), components
 

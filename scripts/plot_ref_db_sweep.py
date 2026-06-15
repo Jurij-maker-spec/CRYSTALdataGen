@@ -294,9 +294,9 @@ def plot_landscape(rows, structure, outdir):
         for fw in force_weights
     ]
 
-    cut = round(cs_min + 3)
+    cut = round(cs_min + 15)
     ax_top.set_ylim(cut, cs_max*1.05)
-    ax_bottom.set_ylim(cs_min*0.98, cut)
+    ax_bottom.set_ylim(cs_min*0.95, cut)
 
     ax_top.text(
         0.05,
