@@ -13,6 +13,137 @@ import numpy as np
 # Helpers
 #################################################################
 
+def infer_train_size_from_split_name(split: str) -> dict[str, Any] | None:
+    """
+    Infer size/split_val/source from split names when train_size_map has no entry.
+
+    Supported examples
+    ------------------
+    SiO2_1000_10_90
+        -> size=1000, split_val=0.9
+
+    SiO2_PBE_1000_10_90
+        -> size=1000, split_val=0.9
+
+    TiO2_rutil_10_90_1000
+        -> size=1000, split_val=0.9
+
+    SiO2_PBE_cum_75_25
+        -> split_val=0.75, size not inferred
+
+    SiO2_PBE_cumulative
+        -> no size/split_val inferred
+
+    Notes
+    -----
+    split_val is interpreted as the larger/train fraction:
+        10_90 -> 0.9
+        25_75 -> 0.75
+        75_25 -> 0.75
+
+    This matches the existing train_size_map convention.
+    """
+    split = str(split).strip()
+
+    out: dict[str, Any] = {}
+
+    # ------------------------------------------------------------
+    # Pattern A:
+    #   <prefix>_<size>_<a>_<b>
+    #
+    # Examples:
+    #   SiO2_1000_10_90
+    #   SiO2_PBE_1000_10_90
+    # ------------------------------------------------------------
+    m = re.search(
+        r"(?:^|_)(?P<size>[0-9]+)_(?P<a>[0-9]+)_(?P<b>[0-9]+)$",
+        split,
+    )
+
+    if m is not None:
+        size = int(m.group("size"))
+        a = int(m.group("a"))
+        b = int(m.group("b"))
+
+        if a + b > 0:
+            out["size"] = size
+            out["split_val"] = max(a, b) / (a + b)
+            out["source"] = "inferred_from_split"
+            return out
+
+    # ------------------------------------------------------------
+    # Pattern B:
+    #   <prefix>_<a>_<b>_<size>
+    #
+    # Example:
+    #   TiO2_rutil_10_90_1000
+    # ------------------------------------------------------------
+    m = re.search(
+        r"(?:^|_)(?P<a>[0-9]+)_(?P<b>[0-9]+)_(?P<size>[0-9]+)$",
+        split,
+    )
+
+    if m is not None:
+        a = int(m.group("a"))
+        b = int(m.group("b"))
+        size = int(m.group("size"))
+
+        if a + b > 0:
+            out["size"] = size
+            out["split_val"] = max(a, b) / (a + b)
+            out["source"] = "inferred_from_split"
+            return out
+
+    # ------------------------------------------------------------
+    # Pattern C:
+    #   <prefix>_<a>_<b>
+    #
+    # Examples:
+    #   SiO2_10_90
+    #   AlN_10_90
+    #
+    # Only infer split_val, not size.
+    # ------------------------------------------------------------
+    m = re.search(
+        r"(?:^|_)(?P<a>[0-9]+)_(?P<b>[0-9]+)$",
+        split,
+    )
+
+    if m is not None:
+        a = int(m.group("a"))
+        b = int(m.group("b"))
+
+        if a + b > 0:
+            out["split_val"] = max(a, b) / (a + b)
+            out["source"] = "inferred_from_split"
+            return out
+
+    # ------------------------------------------------------------
+    # Pattern D:
+    #   <prefix>_cum_<a>_<b>
+    #
+    # Example:
+    #   SiO2_PBE_cum_75_25
+    #
+    # Only infer split_val, not size.
+    # ------------------------------------------------------------
+    m = re.search(
+        r"(?:^|_)cum_(?P<a>[0-9]+)_(?P<b>[0-9]+)$",
+        split,
+    )
+
+    if m is not None:
+        a = int(m.group("a"))
+        b = int(m.group("b"))
+
+        if a + b > 0:
+            out["split_val"] = max(a, b) / (a + b)
+            out["source"] = "inferred_from_split"
+            return out
+
+    return None
+
+
 def parse_hyperparams_from_run_id(run_id: str) -> dict[str, Any]:
     """
     Parse common sweep hyperparameters from run names like:
@@ -21,21 +152,27 @@ def parse_hyperparams_from_run_id(run_id: str) -> dict[str, Any]:
 
     Returns keys only when they are found:
         batch_size, max_epochs, energy_weight, forces_weight,
-        r_max, seed, train_size
+        r_max, seed, size
+
+    Notes
+    -----
+    The suffix _n1400 is stored as "size" to match train_size_map.
     """
     run_id = str(run_id)
 
+    float_token = r"[0-9]+(?:p[0-9]+)?|[0-9]+(?:\.[0-9]+)?"
+
     patterns = {
-        "batch_size": r"(?:^|_)bs(?P<value>[0-9]+)(?:_|$)",
-        "max_epochs": r"(?:^|_)ep(?P<value>[0-9]+)(?:_|$)",
-        "energy_weight": r"(?:^|_)ew(?P<value>[0-9]+(?:p[0-9]+)?|[0-9]+(?:\.[0-9]+)?)(?:_|$)",
-        "forces_weight": r"(?:^|_)fw(?P<value>[0-9]+(?:p[0-9]+)?|[0-9]+(?:\.[0-9]+)?)(?:_|$)",
-        "r_max": r"(?:^|_)rmax(?P<value>[0-9]+(?:p[0-9]+)?|[0-9]+(?:\.[0-9]+)?)(?:_|$)",
-        "seed": r"(?:^|_)seed(?P<value>[0-9]+)(?:_|$)",
-        "train_size": r"(?:^|_)n(?P<value>[0-9]+)(?:_|$)",
+        "batch_size": rf"(?:^|_)bs(?P<value>[0-9]+)(?:_|$)",
+        "max_epochs": rf"(?:^|_)ep(?P<value>[0-9]+)(?:_|$)",
+        "energy_weight": rf"(?:^|_)ew(?P<value>{float_token})(?:_|$)",
+        "forces_weight": rf"(?:^|_)fw(?P<value>{float_token})(?:_|$)",
+        "r_max": rf"(?:^|_)rmax(?P<value>{float_token})(?:_|$)",
+        "seed": rf"(?:^|_)seed(?P<value>[0-9]+)(?:_|$)",
+        "size": rf"(?:^|_)n(?P<value>[0-9]+)(?:_|$)",
     }
 
-    int_keys = {"batch_size", "max_epochs", "seed", "train_size"}
+    int_keys = {"batch_size", "max_epochs", "seed", "size"}
     out: dict[str, Any] = {}
 
     for key, pattern in patterns.items():
@@ -46,9 +183,192 @@ def parse_hyperparams_from_run_id(run_id: str) -> dict[str, Any]:
         raw = m.group("value").replace("p", ".")
 
         if key in int_keys:
-            out[key] = int(raw)
+            out[key] = int(float(raw))
         else:
             out[key] = float(raw)
+
+    return out
+
+
+def _clean_csv_value(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    value = str(value).strip()
+
+    if value == "" or value.lower() in {"none", "nan", "null", "--"}:
+        return None
+
+    return value
+
+
+def _parse_csv_float(value: Any) -> float | None:
+    value = _clean_csv_value(value)
+    if value is None:
+        return None
+    return float(value)
+
+
+def _parse_csv_int(value: Any) -> int | None:
+    value = _clean_csv_value(value)
+    if value is None:
+        return None
+    return int(float(value))
+
+
+def load_train_size_map(train_size_map_path: str | Path) -> list[dict[str, Any]]:
+    """
+    Load train_size_map with columns:
+
+        structure, split, split_val, size, source
+
+    The column names are preserved in the returned dicts.
+    Whitespace after commas is tolerated.
+    """
+    import csv
+
+    train_size_map_path = Path(train_size_map_path)
+    rows: list[dict[str, Any]] = []
+
+    with open(train_size_map_path, newline="") as f:
+        reader = csv.DictReader(f, skipinitialspace=True)
+
+        required = {"structure", "split", "split_val", "size", "source"}
+        found = set(reader.fieldnames or [])
+
+        missing = required - found
+        if missing:
+            raise ValueError(
+                f"Missing required columns in {train_size_map_path}: {sorted(missing)}. "
+                f"Found columns: {reader.fieldnames}"
+            )
+
+        for raw in reader:
+            row = {
+                "structure": _clean_csv_value(raw.get("structure")),
+                "split": _clean_csv_value(raw.get("split")),
+                "split_val": _parse_csv_float(raw.get("split_val")),
+                "size": _parse_csv_int(raw.get("size")),
+                "source": _clean_csv_value(raw.get("source")),
+            }
+            if row["structure"] is None:
+                raise ValueError(f"Missing structure in row: {raw}")
+
+            if row["split"] is None:
+                raise ValueError(f"Missing split in row: {raw}")
+
+            if row["split_val"] is None:
+                raise ValueError(f"Missing split_val in row: {raw}")
+
+            if row["source"] is None:
+                row["source"] = "unknown"
+
+            rows.append(row)
+
+    return rows
+
+
+def find_train_size_map_row(
+    rows: list[dict[str, Any]],
+    *,
+    structure: str,
+    split: str,
+) -> dict[str, Any] | None:
+    """
+    Strictly match train_size_map rows to DB evaluation splits.
+
+    Required match:
+        map.structure == DB first-level structure
+        map.split     == DB evaluation split
+
+    This assumes the DB is strictly separated, e.g.:
+
+        /structures/Al2O3/...
+        /structures/Al2O3_PBE/...
+    """
+    structure = str(structure).strip()
+    split = str(split).strip()
+
+    matches = [
+        row for row in rows
+        if str(row["structure"]).strip() == structure
+        and str(row["split"]).strip() == split
+    ]
+
+    if len(matches) == 1:
+        return matches[0]
+
+    if len(matches) > 1:
+        raise ValueError(
+            f"Ambiguous train_size_map match for structure={structure}, split={split}: "
+            f"{matches}"
+        )
+
+    return None
+
+
+def merge_hyperparams_with_train_size_map(
+    hp: dict[str, Any],
+    map_row: dict[str, Any] | None,
+    *,
+    verbose_provenance: bool = False,
+) -> dict[str, Any]:
+    """
+    Merge parsed run_id hyperparameters with train_size_map or inferred split metadata.
+
+    Main stored keys:
+        size
+        split_val
+        source
+        size_source
+
+    Rules
+    -----
+    1. If run_id contains _nXXXX, that is the actual run-level size.
+    2. If run_id has no size, use map_row["size"] if available.
+    3. If map_row["size"] is None or 0, do not write split_size.
+    4. Avoid noisy provenance fields unless needed.
+    """
+    out = dict(hp)
+
+    run_id_has_size = "size" in out
+
+    if map_row is None:
+        if run_id_has_size:
+            out["size_source"] = "run_id"
+        else:
+            out["size_source"] = "unknown"
+        return out
+
+    map_size = map_row.get("size", None)
+    map_split_val = map_row.get("split_val", None)
+    map_source = map_row.get("source", None)
+
+    # Treat 0 as "no split-level size" for cumulative/run-id-sized splits.
+    if map_size == 0:
+        map_size = None
+
+    if map_split_val is not None:
+        out["split_val"] = map_split_val
+
+    # Source is kept as one compact provenance field.
+    if map_source is not None:
+        out["source"] = map_source
+
+    # Actual size priority.
+    if run_id_has_size:
+        out["size_source"] = "run_id"
+    elif map_size is not None:
+        out["size"] = map_size
+        out["size_source"] = map_source or "train_size_map"
+    else:
+        out["size_source"] = "unknown"
+
+    if verbose_provenance and map_row is not None:
+        if "structure" in map_row:
+            out["size_map_structure"] = map_row["structure"]
+        if "split" in map_row:
+            out["size_map_split"] = map_row["split"]
 
     return out
 
@@ -61,7 +381,8 @@ def format_hyperparams(
         "energy_weight",
         "forces_weight",
         "seed",
-        "train_size",
+        "size",
+        "split_val",
         "batch_size",
         "max_epochs",
     ),
@@ -79,7 +400,8 @@ def format_hyperparams(
         "energy_weight": "ew",
         "forces_weight": "fw",
         "seed": "seed",
-        "train_size": "n",
+        "size": "n",
+        "split_val": "split",
         "batch_size": "bs",
         "max_epochs": "ep",
     }
@@ -248,19 +570,52 @@ def backfill_hyperparameters_from_run_ids(
     ref_db_path: str | Path,
     *,
     structure: str | None = None,
+    train_size_map_path: str | Path | None = None,
     overwrite: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """
-    Backfill /hyperparameters attrs for old model evaluations by parsing run_id.
+    Backfill /hyperparameters attrs for old model evaluations.
 
-    This assumes parse_hyperparams_from_run_id(run_id) exists.
+    Sources:
+      1. run_id parser:
+            bs, ep, ew, fw, rmax, seed, _n<size>
+      2. optional train_size_map:
+            structure, split, split_val, size, source
+
+    Stored location:
+        /structures/<structure>/evaluations/<split>/<sweep>/<run>/hyperparameters.attrs
     """
     ref_db_path = Path(ref_db_path)
 
-    with h5py.File(ref_db_path, "a") as h5:
+    train_size_rows = None
+    if train_size_map_path is not None:
+        train_size_rows = load_train_size_map(train_size_map_path)
+
+    mode = "DRY-RUN" if dry_run else "WRITE"
+    print("=" * 100)
+    print(f"HYPERPARAMETER BACKFILL [{mode}]")
+    print("=" * 100)
+    print(f"ref_db             : {ref_db_path}")
+    print(f"structure filter   : {structure}")
+    print(f"train_size_map     : {train_size_map_path}")
+    print(f"overwrite          : {overwrite}")
+    print()
+
+    n_seen = 0
+    n_written = 0
+    n_skipped_existing = 0
+    n_no_hparams = 0
+    n_no_map = 0
+
+    with h5py.File(ref_db_path, "a" if not dry_run else "r") as h5:
         structures_root = h5["structures"]
 
-        structure_names = [structure] if structure is not None else list(structures_root.keys())
+        structure_names = (
+            [structure]
+            if structure is not None
+            else list(structures_root.keys())
+        )
 
         for structure_name in structure_names:
             eval_root_path = f"structures/{structure_name}/evaluations"
@@ -273,21 +628,69 @@ def backfill_hyperparameters_from_run_ids(
             for split_name, split_group in eval_root.items():
                 for sweep_name, sweep_group in split_group.items():
                     for run_id, run_group in sweep_group.items():
+                        n_seen += 1
+
                         if "hyperparameters" in run_group and not overwrite:
+                            n_skipped_existing += 1
                             continue
 
                         hp = parse_hyperparams_from_run_id(run_id)
 
+                        map_row = None
+
+                        if train_size_rows is not None:
+                            map_row = find_train_size_map_row(
+                                train_size_rows,
+                                structure=structure_name,
+                                split=split_name,
+                            )
+
+                            if map_row is None:
+                                inferred = infer_train_size_from_split_name(split_name)
+
+                                if inferred is not None:
+                                    map_row = inferred
+                                    print(
+                                        "INFO inferred split metadata: "
+                                        f"structure={structure_name}, split={split_name}, "
+                                        f"inferred={inferred}"
+                                    )
+                                else:
+                                    n_no_map += 1
+                                    print(
+                                        "WARNING no train_size_map match and no split inference: "
+                                        f"structure={structure_name}, split={split_name}, "
+                                        f"sweep={sweep_name}, run={run_id}"
+                                    )
+
+                        hp = merge_hyperparams_with_train_size_map(hp, map_row)
+
                         if not hp:
-                            print(f"SKIP no parsed hyperparams: {structure_name}/{run_id}")
+                            print(f"SKIP no parsed hyperparams: {structure_name}/{split_name}/{run_id}")
+                            n_no_hparams += 1
                             continue
 
-                        write_hyperparameters(run_group, hp)
-
-                        print(
-                            f"backfilled {structure_name} / {split_name} / "
+                        msg = (
+                            f"{structure_name} / {split_name} / "
                             f"{sweep_name} / {run_id}: {hp}"
                         )
+
+                        if dry_run:
+                            print(f"would backfill\n {msg}")
+                        else:
+                            write_hyperparameters(run_group, hp)
+                            print(f"backfilled {msg}")
+                            n_written += 1
+
+    print()
+    print("=" * 100)
+    print("SUMMARY")
+    print("=" * 100)
+    print(f"seen              : {n_seen}")
+    print(f"written           : {n_written}")
+    print(f"skipped existing  : {n_skipped_existing}")
+    print(f"no parsed hp      : {n_no_hparams}")
+    print(f"no map match      : {n_no_map}")
 
 
 #################################################################
@@ -1094,14 +1497,16 @@ def read_hyperparameters_from_group(group: h5py.Group, run_id: str | None = None
     Priority:
         1. /hyperparameters attrs
         2. selected run-level attrs, for backwards compatibility
-        3. optional run_id parsing fallback, if parse_hyperparams_from_run_id exists
+        3. optional run_id parsing fallback
+
+    DB storage uses "size" to match train_size_map.
+    Reader exposes "train_size" as a compatibility alias if absent.
     """
     hp: dict[str, Any] = {}
 
     if "hyperparameters" in group:
         hp.update(dict(group["hyperparameters"].attrs))
 
-    # Backwards compatibility if some params were stored as attrs.
     attr_aliases = {
         "r_max": ["r_max", "rmax"],
         "energy_weight": ["energy_weight", "ew"],
@@ -1109,22 +1514,29 @@ def read_hyperparameters_from_group(group: h5py.Group, run_id: str | None = None
         "seed": ["seed"],
         "batch_size": ["batch_size", "bs"],
         "max_epochs": ["max_epochs", "epochs", "ep"],
-        "train_size": ["train_size", "n_train", "dataset_size"],
+        "size": ["size", "train_size", "n_train", "dataset_size"],
+        "split_val": ["split_val"],
+        "source": ["source", "size_source"],
     }
 
     for canonical, aliases in attr_aliases.items():
         if canonical in hp:
             continue
+
         for key in aliases:
             if key in group.attrs:
                 hp[canonical] = group.attrs[key]
                 break
 
-    # Optional fallback for old DBs. Only use if you added this parser.
-    if run_id is not None and "parse_hyperparams_from_run_id" in globals():
+    if run_id is not None:
         parsed = parse_hyperparams_from_run_id(run_id)
         for key, value in parsed.items():
             hp.setdefault(key, value)
+
+    # Compatibility alias for existing explorer/plotting code.
+    # Not written to DB, only returned by reader.
+    if "train_size" not in hp and "size" in hp:
+        hp["train_size"] = hp["size"]
 
     return hp
 
@@ -1257,3 +1669,4 @@ def list_model_evaluations_for_structure(
         )
 
     return rows
+

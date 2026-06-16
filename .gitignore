@@ -76,6 +76,7 @@ structures/
 structures_pbe/
 data/
 manual/
+old/
 
 # Generated structure/output folders
 */disto/

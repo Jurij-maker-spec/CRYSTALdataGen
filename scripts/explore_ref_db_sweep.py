@@ -5,11 +5,353 @@ from pathlib import Path
 import argparse
 import re
 from collections import defaultdict
+from math import sqrt
+from scipy.stats import beta
 
 import h5py
 import numpy as np
 
 REF_PATH = Path("/home/jha/jha/python_scripts/CRYSTALdataGen/data/ref_db.h5")
+
+
+
+
+
+# Statistics 
+def beta_credible_interval(successes, failures, alpha_prior=1.0, beta_prior=1.0, ci=0.90):
+    """
+    Return lower/upper equal-tailed credible interval for Beta posterior.
+
+    Posterior:
+        p ~ Beta(alpha_prior + successes, beta_prior + failures)
+    """
+    a = alpha_prior + successes
+    b = beta_prior + failures
+
+    q_low = (1.0 - ci) / 2.0
+    q_high = 1.0 - q_low
+
+    return float(beta.ppf(q_low, a, b)), float(beta.ppf(q_high, a, b))
+
+
+def make_success_threshold(rows, metric="composite_score", success_quantile=0.10):
+    """
+    Lower metric is assumed better.
+    Success means:
+        metric <= quantile(metric, success_quantile)
+    """
+    values = [
+        safe_float(r.get(metric))
+        for r in rows
+        if np.isfinite(safe_float(r.get(metric)))
+    ]
+
+    if not values:
+        raise ValueError(f"No finite values found for metric: {metric}")
+
+    threshold = float(np.quantile(values, success_quantile))
+    return threshold
+
+
+def summarize_success_group(
+    group_rows,
+    *,
+    metric,
+    threshold,
+    alpha_prior=1.0,
+    beta_prior=1.0,
+    ci=0.90,
+):
+    scores = [
+        safe_float(r.get(metric))
+        for r in group_rows
+        if np.isfinite(safe_float(r.get(metric)))
+    ]
+
+    n = len(scores)
+    n_success = sum(score <= threshold for score in scores)
+    n_fail = n - n_success
+
+    posterior_mean = (n_success + alpha_prior) / (
+        n + alpha_prior + beta_prior
+    )
+
+    ci_low, ci_high = beta_credible_interval(
+        n_success,
+        n_fail,
+        alpha_prior=alpha_prior,
+        beta_prior=beta_prior,
+        ci=ci,
+    )
+
+    return {
+        "n": n,
+        "successes": n_success,
+        "failures": n_fail,
+        "raw_rate": n_success / n if n > 0 else np.nan,
+        "posterior_mean": posterior_mean,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "median_score": median_or_nan(scores),
+        "mean_score": mean_or_nan(scores),
+        "best_score": min_or_nan(scores),
+    }
+
+
+def probability_best_from_beta(records, n_samples=20000, seed=123):
+    """
+    Estimate P(each group has the highest success probability).
+
+    records must contain:
+        successes
+        failures
+        label
+    """
+    rng = np.random.default_rng(seed)
+
+    if not records:
+        return {}
+
+    samples = []
+
+    for r in records:
+        a = 1.0 + r["successes"]
+        b = 1.0 + r["failures"]
+        samples.append(rng.beta(a, b, size=n_samples))
+
+    samples = np.vstack(samples)
+    winners = np.argmax(samples, axis=0)
+
+    p_best = {}
+
+    for i, r in enumerate(records):
+        p_best[r["label"]] = float(np.mean(winners == i))
+
+    return p_best
+
+
+def print_probabilistic_hyperparameter_analysis(
+    rows,
+    *,
+    metric="composite_score",
+    success_quantile=0.10,
+    ci=0.90,
+    n_samples=20000,
+):
+    """
+    Estimate which hyperparameters are most likely to produce top-performing models.
+
+    Success definition:
+        metric <= empirical success_quantile
+
+    Uses Beta-binomial smoothing:
+        p(success) ~ Beta(1 + successes, 1 + failures)
+    """
+
+    clean_rows = [
+        r for r in rows
+        if np.isfinite(safe_float(r.get(metric)))
+    ]
+
+    if not clean_rows:
+        print()
+        print(f"No rows available for probabilistic analysis with metric: {metric}")
+        return
+
+    threshold = make_success_threshold(
+        clean_rows,
+        metric=metric,
+        success_quantile=success_quantile,
+    )
+
+    print()
+    print("=" * 120)
+    print("PROBABILISTIC HYPERPARAMETER SUCCESS ANALYSIS")
+    print("=" * 120)
+    print(f"metric             : {metric}")
+    print(f"lower is better    : yes")
+    print(f"success quantile   : {success_quantile:.3f}")
+    print(f"success threshold  : {threshold:.6g}")
+    print(f"credible interval  : {100 * ci:.1f}%")
+    print()
+
+    pooled_params = [
+        ("r_max", "r_max"),
+        ("energy_weight", "ew"),
+        ("forces_weight", "fw"),
+    ]
+
+    for param, short_name in pooled_params:
+        groups = {}
+
+        for r in clean_rows:
+            value = safe_float(r.get(param))
+            if not np.isfinite(value):
+                continue
+
+            groups.setdefault(value, []).append(r)
+
+        if not groups:
+            continue
+
+        records = []
+
+        for value, group_rows in groups.items():
+            summary = summarize_success_group(
+                group_rows,
+                metric=metric,
+                threshold=threshold,
+                ci=ci,
+            )
+
+            record = {
+                "label": value,
+                "param": param,
+                "value": value,
+                **summary,
+            }
+            records.append(record)
+
+        p_best = probability_best_from_beta(
+            records,
+            n_samples=n_samples,
+            seed=123,
+        )
+
+        for r in records:
+            r["p_best"] = p_best.get(r["label"], np.nan)
+
+        records = sorted(
+            records,
+            key=lambda r: (
+                -r["posterior_mean"],
+                -r["p_best"],
+                r["median_score"],
+            ),
+        )
+
+        print()
+        print("-" * 120)
+        print(f"POOLED PARAMETER: {param}")
+        print("-" * 120)
+
+        header = (
+            f"{short_name:>10} "
+            f"{'n':>5} "
+            f"{'succ':>6} "
+            f"{'raw':>8} "
+            f"{'post_mean':>10} "
+            f"{'CI_low':>10} "
+            f"{'CI_high':>10} "
+            f"{'P(best)':>10} "
+            f"{'median':>10} "
+            f"{'best':>10}"
+        )
+        print(header)
+        print("-" * len(header))
+
+        for r in records:
+            print(
+                f"{r['value']:>10.4g} "
+                f"{r['n']:>5d} "
+                f"{r['successes']:>6d} "
+                f"{100 * r['raw_rate']:>7.1f}% "
+                f"{100 * r['posterior_mean']:>9.1f}% "
+                f"{100 * r['ci_low']:>9.1f}% "
+                f"{100 * r['ci_high']:>9.1f}% "
+                f"{100 * r['p_best']:>9.1f}% "
+                f"{r['median_score']:>10.4g} "
+                f"{r['best_score']:>10.4g}"
+            )
+
+    print()
+    print("-" * 120)
+    print("FULL TUPLE PROBABILITIES")
+    print("-" * 120)
+
+    tuple_groups = {}
+
+    for r in clean_rows:
+        r_max = safe_float(r.get("r_max"))
+        ew = safe_float(r.get("energy_weight"))
+        fw = safe_float(r.get("forces_weight"))
+
+        if not all(np.isfinite(v) for v in [r_max, ew, fw]):
+            continue
+
+        key = (r_max, ew, fw)
+        tuple_groups.setdefault(key, []).append(r)
+
+    tuple_records = []
+
+    for key, group_rows in tuple_groups.items():
+        summary = summarize_success_group(
+            group_rows,
+            metric=metric,
+            threshold=threshold,
+            ci=ci,
+        )
+
+        r_max, ew, fw = key
+
+        tuple_records.append({
+            "label": key,
+            "r_max": r_max,
+            "energy_weight": ew,
+            "forces_weight": fw,
+            **summary,
+        })
+
+    p_best_tuple = probability_best_from_beta(
+        tuple_records,
+        n_samples=n_samples,
+        seed=456,
+    )
+
+    for r in tuple_records:
+        r["p_best"] = p_best_tuple.get(r["label"], np.nan)
+
+    tuple_records = sorted(
+        tuple_records,
+        key=lambda r: (
+            -r["posterior_mean"],
+            -r["p_best"],
+            r["median_score"],
+        ),
+    )
+
+    header = (
+        f"{'r_max':>7} "
+        f"{'ew':>7} "
+        f"{'fw':>7} "
+        f"{'n':>5} "
+        f"{'succ':>6} "
+        f"{'raw':>8} "
+        f"{'post_mean':>10} "
+        f"{'CI_low':>10} "
+        f"{'CI_high':>10} "
+        f"{'P(best)':>10} "
+        f"{'median':>10} "
+        f"{'best':>10}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for r in tuple_records[:20]:
+        print(
+            f"{r['r_max']:>7.3g} "
+            f"{r['energy_weight']:>7.3g} "
+            f"{r['forces_weight']:>7.3g} "
+            f"{r['n']:>5d} "
+            f"{r['successes']:>6d} "
+            f"{100 * r['raw_rate']:>7.1f}% "
+            f"{100 * r['posterior_mean']:>9.1f}% "
+            f"{100 * r['ci_low']:>9.1f}% "
+            f"{100 * r['ci_high']:>9.1f}% "
+            f"{100 * r['p_best']:>9.1f}% "
+            f"{r['median_score']:>10.4g} "
+            f"{r['best_score']:>10.4g}"
+        )
 
 
 def parse_float_token(value: str) -> float:
@@ -768,8 +1110,12 @@ def summarize_structure(
     include_all_splits: bool = False,
     rank_hyperparams: bool = False,
     pool_hyperparams: bool = False,
+    prob_hyperparams: bool = False,
     rank_metric: str = "composite_score",
     rank_top: int = 20,
+    success_quantile: float = 0.10,
+    prob_ci: float = 0.90,
+    prob_samples: int = 20000,
 ):
     all_runs = list(iter_evaluation_runs(h5, structure) or [])
     all_runs = list(iter_evaluation_runs(h5, structure) or [])
@@ -919,6 +1265,14 @@ def summarize_structure(
             model_rows,
             metric=rank_metric,
         )
+    if prob_hyperparams:
+        print_probabilistic_hyperparameter_analysis(
+            model_rows,
+            metric=rank_metric,
+            success_quantile=success_quantile,
+            ci=prob_ci,
+            n_samples=prob_samples,
+        )  
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -955,6 +1309,33 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print pooled main-effect ranking for r_max, energy_weight, and forces_weight.",
     )
+    parser.add_argument(
+        "--prob_hyperparams",
+        action="store_true",
+        help="Estimate probability that hyperparameters yield top-performing models.",
+    )
+
+    parser.add_argument(
+        "--success_quantile",
+        type=float,
+        default=0.10,
+        help="Success threshold as lower quantile of the ranking metric. Default: 0.10 means best 10%%.",
+    )
+
+    parser.add_argument(
+        "--prob_ci",
+        type=float,
+        default=0.90,
+        help="Credible interval width for Beta-binomial probabilities.",
+    )
+
+    parser.add_argument(
+        "--prob_samples",
+        type=int,
+        default=20000,
+        help="Monte Carlo samples for estimating P(best).",
+    )
+
     return parser
 
 
@@ -973,10 +1354,14 @@ def main():
             h5,
             args.structure,
             include_all_splits=args.include_all_splits,
-            pool_hyperparams=args.pool_hyperparams,
             rank_hyperparams=args.rank_hyperparams,
+            pool_hyperparams=args.pool_hyperparams,
+            prob_hyperparams=args.prob_hyperparams,
             rank_metric=args.rank_metric,
             rank_top=args.rank_top,
+            success_quantile=args.success_quantile,
+            prob_ci=args.prob_ci,
+            prob_samples=args.prob_samples,
         )
 
 

@@ -15,28 +15,117 @@ def print_attrs(obj, indent=""):
         print(f"{indent}  {k}: {v}")
 
 
-def describe_dataset(name, ds, indent=""):
-    data = ds[()]
+def decode_h5_value(value):
+    """
+    Convert HDF5 byte strings to normal Python strings where useful.
+    """
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+
+    if isinstance(value, np.ndarray) and value.dtype.kind == "S":
+        return value.astype(str)
+
+    return value
+
+
+def describe_dataset(
+    name,
+    ds,
+    indent="",
+    *,
+    print_values=False,
+    max_full_size=50,
+    preview_size=10,
+    precision=6,
+):
+    """
+    Print dataset shape/dtype and optionally values.
+
+    For small arrays:
+        prints full value.
+
+    For large numeric arrays:
+        prints first N values and min/max/mean.
+
+    For large non-numeric arrays:
+        prints first N values only.
+    """
     print(f"{indent}{name}: shape={ds.shape}, dtype={ds.dtype}")
 
-    if np.issubdtype(ds.dtype, np.number) and data.size > 0:
-        arr = np.asarray(data)
-        print(
-            f"{indent}  min={np.nanmin(arr):.6g}, "
-            f"max={np.nanmax(arr):.6g}, "
-            f"mean={np.nanmean(arr):.6g}"
-        )
+    print_attrs(ds, indent=indent + "  ")
+
+    if not print_values:
+        return
+
+    value = decode_h5_value(ds[()])
+
+    if isinstance(value, np.ndarray):
+        if value.size <= max_full_size:
+            with np.printoptions(
+                precision=precision,
+                suppress=True,
+                linewidth=160,
+            ):
+                print(f"{indent}  value = {value}")
+            return
+
+        flat = value.ravel()
+        preview = flat[:preview_size]
+
+        with np.printoptions(
+            precision=precision,
+            suppress=True,
+            linewidth=160,
+        ):
+            print(f"{indent}  preview first {preview_size} = {preview}")
+
+        if np.issubdtype(value.dtype, np.number):
+            finite = value[np.isfinite(value)] if np.issubdtype(value.dtype, np.floating) else value
+
+            if finite.size > 0:
+                print(
+                    f"{indent}  min={np.nanmin(value):.6g}, "
+                    f"max={np.nanmax(value):.6g}, "
+                    f"mean={np.nanmean(value):.6g}"
+                )
+        return
+
+    print(f"{indent}  value = {value}")
 
 
-def recurse_group(group, indent=""):
+def recurse_group(
+    group,
+    indent="",
+    *,
+    print_values=False,
+    max_full_size=50,
+    preview_size=10,
+    precision=6,
+):
     print_attrs(group, indent=indent)
 
     for name, obj in group.items():
         if isinstance(obj, h5py.Dataset):
-            describe_dataset(name, obj, indent=indent)
+            describe_dataset(
+                name,
+                obj,
+                indent=indent,
+                print_values=print_values,
+                max_full_size=max_full_size,
+                preview_size=preview_size,
+                precision=precision,
+            )
+
         elif isinstance(obj, h5py.Group):
             print(f"{indent}{name}/")
-            recurse_group(obj, indent=indent + "  ")
+            recurse_group(
+                obj,
+                indent=indent + "  ",
+                print_values=print_values,
+                max_full_size=max_full_size,
+                preview_size=preview_size,
+                precision=precision,
+            )
 
 
 def get_ref_basic_stats(sg):
@@ -292,6 +381,49 @@ def print_details(h5, structure):
     return True
 
 
+def print_run_layout(
+    h5,
+    *,
+    structure,
+    split,
+    sweep_id,
+    run_id,
+    print_values=False,
+    max_full_size=50,
+    preview_size=10,
+    precision=6,
+):
+    """
+    Print the complete DB layout for exactly one model evaluation run.
+    """
+    path = evaluation_group_path(structure, split, sweep_id, run_id)
+
+    print("=" * 100)
+    print("RUN DB LAYOUT")
+    print("=" * 100)
+    print(f"DB group  : {path}")
+    print(f"structure : {structure}")
+    print(f"split     : {split}")
+    print(f"sweep_id  : {sweep_id}")
+    print(f"run_id    : {run_id}")
+    print(f"values    : {print_values}")
+    print("=" * 100)
+
+    if path not in h5:
+        raise KeyError(f"Missing model evaluation group: {path}")
+
+    run_group = h5[path]
+
+    recurse_group(
+        run_group,
+        indent="  ",
+        print_values=print_values,
+        max_full_size=max_full_size,
+        preview_size=preview_size,
+        precision=precision,
+    )
+
+
 def print_frequency_comparison(ref_freqs, model_freqs):
     ref_freqs = np.asarray(ref_freqs, dtype=float)
     model_freqs = np.asarray(model_freqs, dtype=float)
@@ -422,6 +554,38 @@ def main():
     parser.add_argument("--summary", action="store_true", help="Print compact structure summary")
     parser.add_argument("--details", action="store_true", help="Print full recursive DB details")
     parser.add_argument("--evaluations", action="store_true", help="Print compact evaluation table")
+    parser.add_argument(
+        "--run-layout",
+        action="store_true",
+        help="Print full recursive DB layout for one evaluation run.",
+    )
+
+    parser.add_argument(
+        "--values",
+        action="store_true",
+        help="When printing layouts/details, also print dataset values or previews.",
+    )
+
+    parser.add_argument(
+        "--max-full-size",
+        type=int,
+        default=50,
+        help="Maximum array size printed fully when --values is active.",
+    )
+
+    parser.add_argument(
+        "--preview-size",
+        type=int,
+        default=10,
+        help="Number of flattened values previewed for large arrays when --values is active.",
+    )
+
+    parser.add_argument(
+        "--precision",
+        type=int,
+        default=3,
+        help="Floating point precision for printed arrays.",
+    )
     parser.add_argument("--compare", action="store_true", help="Compare model property against CRYSTAL reference")
     parser.add_argument("--split", default=None, help="Dataset split for comparison")
     parser.add_argument("--sweep_id", default=None, help="Sweep id for comparison")
@@ -460,6 +624,34 @@ def main():
             if structure not in structures:
                 raise KeyError(f"Structure not found: {structure}")
 
+        if args.run_layout:
+            required = {
+                "--structure": args.structure,
+                "--split": args.split,
+                "--sweep_id": args.sweep_id,
+                "--run_id": args.run_id,
+            }
+
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise ValueError(
+                    f"--run-layout requires: {', '.join(missing)}"
+                )
+
+            print_run_layout(
+                h5,
+                structure=args.structure,
+                split=args.split,
+                sweep_id=args.sweep_id,
+                run_id=args.run_id,
+                print_values=args.values,
+                max_full_size=args.max_full_size,
+                preview_size=args.preview_size,
+                precision=args.precision,
+            )
+            return
+
+
         if args.compare:
             required = {
                 "--structure": args.structure,
@@ -487,7 +679,23 @@ def main():
 
         if args.details:
             for structure in selected:
-                print_details(h5, structure)
+                print("=" * 80)
+                print(f"DETAILS: {structure}")
+                print("=" * 80)
+
+                path = f"structures/{structure}"
+                if path not in h5:
+                    print(f"[MISSING] {path}")
+                    continue
+
+                recurse_group(
+                    h5[path],
+                    indent="  ",
+                    print_values=args.values,
+                    max_full_size=args.max_full_size,
+                    preview_size=args.preview_size,
+                    precision=args.precision,
+                )
             return
 
         if args.evaluations:

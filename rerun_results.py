@@ -13,6 +13,9 @@ Examples:
     python rerun_results.py --force-reeval
     python rerun_results.py --dry-run
     python rerun_results.py --structure SiO2
+    python rerun_results.py --structure-only SiO2_PBE --plot-only
+    python rerun_results.py --sweep-dir SiO2_10_90/SiO2_master_eval_full_260504_120000 --plot-only
+    python rerun_results.py --sweep-id SiO2_master_eval_full_260504_120000 --score-only
 """
 
 from __future__ import annotations
@@ -94,6 +97,39 @@ def discover_run_dirs(results_root: Path) -> list[Path]:
         p for p in results_root.rglob("*")
         if is_run_dir(p)
     )
+
+
+def resolve_existing_sweep_dir(sweep_dir: Path, results_root: Path) -> Path:
+    """
+    Resolve an existing sweep directory.
+
+    Accepted:
+        --sweep-dir results/SiO2_10_90/SiO2_master_eval_full_...
+        --sweep-dir SiO2_10_90/SiO2_master_eval_full_...
+        --sweep-dir /absolute/path/to/sweep
+    """
+    if sweep_dir.is_absolute():
+        resolved = sweep_dir
+    else:
+        # Allow both:
+        #   results/...
+        # and:
+        #   SiO2_10_90/...
+        direct = (PROJECT_ROOT / sweep_dir).resolve()
+        under_results = (results_root / sweep_dir).resolve()
+
+        if direct.exists():
+            resolved = direct
+        else:
+            resolved = under_results
+
+    if not resolved.exists():
+        raise FileNotFoundError(f"Missing sweep directory: {resolved}")
+
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"Sweep path is not a directory: {resolved}")
+
+    return resolved
 
 
 def normalize_structure_name(name: str) -> str:
@@ -210,9 +246,10 @@ def default_ref_db_path() -> Path:
 
 
 def load_eval_settings(run_cfg: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-    settings = {}
+    settings: dict[str, Any] = {}
 
-    # Prefer stored eval settings if you later decide to put them into run_config.json.
+    # Use stored eval settings only as defaults.
+    # Important: command-line rerun behavior must override stale run_config values.
     if isinstance(run_cfg.get("eval_settings"), dict):
         settings.update(run_cfg["eval_settings"])
 
@@ -223,11 +260,16 @@ def load_eval_settings(run_cfg: dict[str, Any], args: argparse.Namespace) -> dic
     settings.setdefault("compare_crystal_modes", args.compare_crystal_modes)
     settings.setdefault("mode_skip_first", args.mode_skip_first)
     settings.setdefault("mode_degeneracy_tol", args.mode_degeneracy_tol)
-    settings.setdefault("write_ref_db", True)
 
-    settings["use_ref_db_cache"] = not args.no_db_cache
-    settings["force_reeval"] = args.force_reeval
-    settings["plot_only"] = args.plot_only
+    # Critical fix:
+    # Do not use setdefault here. Old run_config.json files may contain
+    # "write_ref_db": false, which would otherwise silently disable DB writeback.
+    settings["write_ref_db"] = not bool(args.no_write_ref_db)
+
+    # Runtime/cache behavior should also be controlled by this rerun script.
+    settings["use_ref_db_cache"] = not bool(args.no_db_cache)
+    settings["force_reeval"] = bool(args.force_reeval)
+    settings["plot_only"] = bool(args.plot_only)
 
     return settings
 
@@ -246,6 +288,9 @@ def passes_filters(run_dir: Path, structure: str, args: argparse.Namespace) -> b
         return False
 
     if args.structure and structure != args.structure:
+        return False
+
+    if args.sweep_id and infer_sweep_id(run_dir) != args.sweep_id:
         return False
 
     if args.contains and args.contains not in text:
@@ -482,7 +527,7 @@ def update_sweep_summary(result: dict[str, Any]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Recursively rerun plotting/evaluation for all trained models in results/."
+        description="Recursively rerun plotting/evaluation for trained models in results/."
     )
 
     parser.add_argument(
@@ -490,6 +535,28 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=RESULTS_ROOT_DEFAULT,
         help="Root to scan. Default: PROJECT_ROOT/results",
+    )
+
+    parser.add_argument(
+        "--sweep-dir",
+        "--sweep-only",
+        dest="sweep_dir",
+        type=Path,
+        default=None,
+        help=(
+            "Evaluate only one existing sweep directory. "
+            "Relative paths are resolved under PROJECT_ROOT/results, "
+            "but paths starting with results/ also work."
+        ),
+    )
+
+    parser.add_argument(
+        "--sweep-id",
+        default=None,
+        help=(
+            "Evaluate only runs whose parent sweep directory has this exact name, "
+            "for example SiO2_master_eval_full_260504_120000."
+        ),
     )
 
     mode = parser.add_mutually_exclusive_group()
@@ -508,6 +575,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Ignore DB cache and recompute MACE inference.",
     )
+    mode.add_argument(
+        "--score-only",
+        action="store_true",
+        help="Only recompute composite score from cached DB metrics and write ranking_metrics back to DB.",
+    )
 
     parser.add_argument(
         "--pbe-only",
@@ -515,16 +587,29 @@ def parse_args() -> argparse.Namespace:
         help="Only evaluate runs whose inferred structure contains 'PBE'.",
     )
 
-    mode.add_argument(
-        "--score-only",
-        action="store_true",
-        help="Only recompute composite score from cached DB metrics and write ranking_metrics back to DB.",
-    )
-
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-db-cache", action="store_true")
 
-    parser.add_argument("--structure", default=None)
+    parser.add_argument(
+        "--no-write-ref-db",
+        action="store_true",
+        help=(
+            "Disable DB writeback. By default rerun_results.py writes evaluation "
+            "results back to the reference DB."
+        ),
+    )
+
+    parser.add_argument(
+        "--structure",
+        "--structure-only",
+        dest="structure",
+        default=None,
+        help=(
+            "Evaluate only one inferred structure, for example SiO2, SiO2_PBE, "
+            "Al2O3, TiO2_rutil, or TiO2_rutil_PBE. TiO2 is normalized to TiO2_rutil."
+        ),
+    )
+
     parser.add_argument("--contains", default=None)
     parser.add_argument("--exclude", default=None)
     parser.add_argument("--max-runs", type=int, default=None)
@@ -547,7 +632,12 @@ def parse_args() -> argparse.Namespace:
         help="Do not update per-sweep master_summary.json/master_summary.csv.",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.structure is not None:
+        args.structure = normalize_structure_name(str(args.structure))
+
+    return args
 
 
 def main() -> None:
@@ -558,16 +648,29 @@ def main() -> None:
     if not results_root.exists():
         raise FileNotFoundError(f"Missing results root: {results_root}")
 
-    discovered = discover_run_dirs(results_root)
+    if args.sweep_dir is not None:
+        scan_root = resolve_existing_sweep_dir(args.sweep_dir, results_root)
+    else:
+        scan_root = results_root
 
-    selected = []
+    discovered = discover_run_dirs(scan_root)
+
+    selected: list[Path] = []
+    skipped_inference_errors: list[dict[str, str]] = []
+
     for run_dir in discovered:
         try:
             run_cfg = load_json(run_dir / "run_config.json")
             structure = infer_structure(run_dir, run_cfg)
             if passes_filters(run_dir, structure, args):
                 selected.append(run_dir)
-        except Exception:
+        except Exception as exc:
+            skipped_inference_errors.append(
+                {
+                    "run_dir": str(run_dir),
+                    "error": repr(exc),
+                }
+            )
             continue
 
     if args.max_runs is not None:
@@ -575,13 +678,32 @@ def main() -> None:
 
     batch_log = {
         "results_root": str(results_root),
+        "scan_root": str(scan_root),
+        "sweep_dir": str(args.sweep_dir) if args.sweep_dir is not None else None,
+        "sweep_id": args.sweep_id,
+        "structure": args.structure,
+        "write_ref_db": not bool(args.no_write_ref_db),
         "n_discovered": len(discovered),
         "n_selected": len(selected),
+        "n_skipped_inference_errors": len(skipped_inference_errors),
+        "skipped_inference_errors": skipped_inference_errors,
         "runs": [],
     }
 
+    print(f"Results root            : {results_root}")
+    print(f"Scan root               : {scan_root}")
+    print(f"DB writeback            : {not bool(args.no_write_ref_db)}")
     print(f"Discovered trained runs : {len(discovered)}")
     print(f"Selected runs           : {len(selected)}")
+
+    if args.structure:
+        print(f"Structure filter        : {args.structure}")
+
+    if args.sweep_id:
+        print(f"Sweep-id filter         : {args.sweep_id}")
+
+    if args.sweep_dir:
+        print(f"Sweep-dir filter        : {args.sweep_dir}")
 
     for i, run_dir in enumerate(selected, start=1):
         print("\n" + "=" * 90)
@@ -603,7 +725,15 @@ def main() -> None:
                 if k not in {"summary", "train_result"}
             }
             batch_log["runs"].append(compact)
+
             print(f"Status: {result['status']}")
+
+            if "structure" in result:
+                print(f"Structure: {result['structure']}")
+            if "dataset_split" in result:
+                print(f"Split:     {result['dataset_split']}")
+            if "sweep_id" in result:
+                print(f"Sweep:     {result['sweep_id']}")
 
         except Exception as exc:
             fail = {
@@ -613,10 +743,11 @@ def main() -> None:
                 "traceback": traceback.format_exc(),
             }
             batch_log["runs"].append(fail)
+
             print("Status: failed")
             print(repr(exc))
 
-    log_path = results_root / "rerun_results_summary.json"
+    log_path = scan_root / "rerun_results_summary.json"
     save_json(batch_log, log_path)
 
     print("\nFinished.")

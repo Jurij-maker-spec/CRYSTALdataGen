@@ -378,7 +378,6 @@ def make_composite_score(
     Missing metrics receive a penalty so incomplete evaluations
     cannot rank artificially well.
     """
-
     components = {
         "freq_mae_term": None,
         "freq_weighted_term": None,
@@ -449,11 +448,14 @@ def make_composite_score(
     #     components["mode_overlap_term"] = 10.0
     # score += components["mode_overlap_term"]
 
-    print(f"Total composite score {score}")
-    for key, val in components:
-        print(f"---> key {key:20} val: {val:5.2f} ")
-
     components["total"] = float(score)
+    print(f"Total composite score {score:5.2f}")
+    for key, val in components.items():
+        if val == None:
+            val = 0.
+        print(f"---> key {key:25} val: {val:5.2f} ")
+
+    
 
 
     return float(score), components
@@ -829,6 +831,7 @@ def rebuild_summary_and_plots_from_cached_eval(
     # ------------------------------------------------------------
     if compare_crystal_modes:
         try:
+            print("---> read mode overlap")
             overlap_data = read_mode_overlap(
                 ref_db_path=crystal_db_path,
                 structure=structure,
@@ -849,7 +852,7 @@ def rebuild_summary_and_plots_from_cached_eval(
                 overlap_outfile = (
                     output_dir / f"{structure}_mode_overlap_combined.png"
                 )
-
+                print("---> replotting mode overlap")
                 plot_combined_overlap_heatmaps(
                     overlap_matrix=overlap_cut,
                     group_overlap_matrix=group_overlap_matrix,
