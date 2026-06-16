@@ -1,0 +1,40 @@
+project_root: /home/jha/jha/python_scripts/CRYSTALdataGen
+
+h5_path: data/train_db.h5
+export_metadata_json: data/tv_meta.json
+
+train_xyz: data/train
+valid_xyz: data/valid
+
+rng_seed: 31415
+
+valid_split_mode: fraction
+valid_per_composition: 20
+valid_fraction_per_composition: 0.10
+
+include_references_in_train: false
+export_stress: true
+export_dipoles: true
+shuffle_final_lists: true
+
+filter_by_training_flag: true
+filter_references_by_training_flag: false
+allow_small_compositions: true
+
+structure_selection_mode: one
+structure_name: TiO2_rutil_PBE
+structure_names: null
+
+use_structure_suffix_in_output: true
+
+distortion_id_prefix: null
+distortion_id_prefixes: null
+
+dataset_size_sweep:
+  enabled: true
+  sizes: [548]
+  valid_fraction: 0.25
+  output_dir: data/TiO2_rutil_PBE
+  name_prefix: SiO2_PBE
+  manifest_yaml: data/TiO2_rutil_PBE/TiO2_dataset_file_sweep.yaml
+  manifest_json: data/TiO2_rutil_PBE/TiO2_dataset_file_sweep.json
