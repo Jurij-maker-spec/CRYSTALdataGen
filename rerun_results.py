@@ -21,8 +21,6 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import csv
-import json
 import os
 import re
 import sys
@@ -53,6 +51,28 @@ REQUIRED_ENV = "mace_env_3_12"
 STRUCTURE_ALIASES = {
     "TiO2": "TiO2_rutil",
 }
+KNOWN_STRUCTURES = {
+    "SiO2",
+    "SiO2_PBE",
+    "Al2O3",
+    "Al2O3_PBE",
+    "AlN",
+    "AlN_PBE",
+    "TiO2_rutil",
+    "TiO2_rutil_PBE",
+}
+INVALID_STRUCTURE_NAMES = {
+    "results",
+    "result",
+    "models",
+    "model",
+    "training",
+    "inference",
+    "data",
+    "manual",
+    "ungrouped",
+}
+
 
 # ============================================================
 # discovery helpers
@@ -159,10 +179,22 @@ def extract_structure_from_results_group(name: str) -> str | None:
         SiO2_PBE_1000_10_90    -> SiO2_PBE
         AlN_PBE_sc             -> AlN_PBE
         Al2O3_10_90            -> Al2O3
+
+    Important:
+        Generic directory names like 'results' must not be accepted.
     """
+    name = Path(name).name
+
+    if name in INVALID_STRUCTURE_NAMES:
+        return None
+
+    # Prefer exact known structure prefix.
+    for structure in sorted(KNOWN_STRUCTURES, key=len, reverse=True):
+        if name == structure or name.startswith(structure + "_"):
+            return normalize_structure_name(structure)
+
     tokens = name.split("_")
 
-    # Remove known dataset/split suffix tokens.
     remove_suffixes = {"sc"}
     while tokens and (tokens[-1] in remove_suffixes or tokens[-1].isdigit()):
         tokens.pop()
@@ -170,62 +202,168 @@ def extract_structure_from_results_group(name: str) -> str | None:
     if not tokens:
         return None
 
-    return normalize_structure_name("_".join(tokens))
+    candidate = normalize_structure_name("_".join(tokens))
+
+    if not is_valid_structure_name(candidate):
+        return None
+
+    return candidate
 
 
 def infer_structure(run_dir: Path, run_cfg: dict[str, Any]) -> str:
+    """
+    Infer the DB structure/functionality namespace.
+
+    Priority:
+      1. train/valid dataset filename, because it encodes the actual DB structure
+      2. explicit run_config['structure']
+      3. sweep_root prefix
+      4. parent split directory
+      5. results_root, but only if it is a real split/group, not just 'results'
+      6. run_name fallback
+    """
+
+    candidates: list[tuple[str, str | None]] = []
+
     # 1. Most reliable: train/valid filenames contain the real DB structure.
     for key in ("train_file", "valid_file"):
         value = run_cfg.get(key)
         if value:
-            structure = extract_structure_from_dataset_filename(str(value))
-            if structure:
-                return structure
+            candidates.append(
+                (f"{key}", extract_structure_from_dataset_filename(str(value)))
+            )
 
-    # 2. Next: results_root, e.g. results/TiO2_rutil_PBE_sc
-    results_root = run_cfg.get("results_root")
-    if results_root:
-        structure = extract_structure_from_results_group(Path(results_root).name)
-        if structure:
-            return structure
+    # 2. Explicit structure field.
+    if "structure" in run_cfg:
+        candidates.append(("run_config.structure", str(run_cfg["structure"])))
 
-    # 3. Next: sweep_root, e.g. TiO2_rutil_PBE_master_eval_full_...
+    # 3. Sweep root, e.g. SiO2_PBE_master_eval_full_...
     sweep_root = run_cfg.get("sweep_root")
     if sweep_root:
         sweep_name = Path(sweep_root).name
         marker = "_master_eval_"
         if marker in sweep_name:
-            structure = sweep_name.split(marker)[0]
-            return normalize_structure_name(structure)
+            candidates.append(("sweep_root", sweep_name.split(marker)[0]))
 
-    # 4. Next: explicit structure field, if present.
-    if "structure" in run_cfg:
-        return normalize_structure_name(str(run_cfg["structure"]))
-
-    # 5. Parent split directory, e.g. results/SiO2_10_90
+    # 4. Parent split directory, e.g. results/SiO2_10_90
     try:
         split_name = run_dir.parents[1].name
-        structure = extract_structure_from_results_group(split_name)
-        if structure:
-            return structure
+        candidates.append(
+            ("parent_split", extract_structure_from_results_group(split_name))
+        )
     except Exception:
         pass
 
-    # 6. Last fallback: run_name. This may only say TiO2, so use cautiously.
+    # 5. results_root, only if it is more specific than the top-level results dir.
+    results_root = run_cfg.get("results_root")
+    if results_root:
+        rr_name = Path(results_root).name
+        candidates.append(
+            ("results_root", extract_structure_from_results_group(rr_name))
+        )
+
+    # 6. Last fallback: run_name.
     run_name = str(run_cfg.get("run_name", run_dir.name))
     m = re.search(r"_([A-Z][A-Za-z0-9]*[0-9]*(?:_[A-Za-z0-9]+)*)$", run_name)
     if m:
-        return normalize_structure_name(m.group(1))
+        candidates.append(("run_name", m.group(1)))
 
-    raise ValueError(f"Could not infer structure for run_dir={run_dir}")
+    valid: list[tuple[str, str]] = []
+    for source, candidate in candidates:
+        if candidate:
+            candidate = normalize_structure_name(candidate)
+            if is_valid_structure_name(candidate):
+                valid.append((source, candidate))
+
+    if not valid:
+        msg = "\n".join(f"  {src}: {cand}" for src, cand in candidates)
+        raise ValueError(
+            f"Could not infer valid structure for run_dir={run_dir}\n"
+            f"Candidates were:\n{msg}"
+        )
+
+    # Use first valid candidate.
+    return valid[0][1]
 
 
 def infer_dataset_split(run_dir: Path) -> str:
-    # results/<split>/<sweep>/<run>
+    """
+    Infer split from path:
+        results/<split>/<sweep>/<run>
+
+    This should remain the physical split directory name.
+    Consistency with structure is checked separately.
+    """
     try:
-        return run_dir.parents[1].name
+        split = run_dir.parents[1].name
     except IndexError:
         return "ungrouped"
+
+    if split in INVALID_STRUCTURE_NAMES:
+        return "ungrouped"
+
+    return split
+
+
+def split_is_pbe(split: str) -> bool:
+    return "_PBE" in split or split.endswith("PBE") or "PBE_" in split
+
+
+def structure_is_pbe(structure: str) -> bool:
+    return "_PBE" in structure or structure.endswith("PBE")
+
+
+def validate_structure_split_consistency(
+    *,
+    structure: str,
+    dataset_split: str,
+    sweep_id: str,
+    run_dir: Path,
+) -> None:
+    """
+    Prevent accidental cross-functional writeback.
+
+    Examples rejected:
+        structure=SiO2_PBE, dataset_split=SiO2_10_90
+        structure=SiO2,     dataset_split=SiO2_PBE_1000_10_90
+
+    This is intentionally strict. If you later want mixed comparison groups,
+    create an explicit allow flag instead of silently writing them.
+    """
+
+    s_pbe = structure_is_pbe(structure)
+    split_pbe = split_is_pbe(dataset_split)
+    sweep_pbe = split_is_pbe(sweep_id)
+
+    if s_pbe and not split_pbe:
+        raise ValueError(
+            "Refusing inconsistent PBE writeback:\n"
+            f"  structure     = {structure}\n"
+            f"  dataset_split = {dataset_split}\n"
+            f"  sweep_id      = {sweep_id}\n"
+            f"  run_dir       = {run_dir}\n"
+            "A PBE structure must not be written under a non-PBE split name."
+        )
+
+    if (not s_pbe) and split_pbe:
+        raise ValueError(
+            "Refusing inconsistent non-PBE writeback:\n"
+            f"  structure     = {structure}\n"
+            f"  dataset_split = {dataset_split}\n"
+            f"  sweep_id      = {sweep_id}\n"
+            f"  run_dir       = {run_dir}\n"
+            "A non-PBE structure must not be written under a PBE split name."
+        )
+
+    if s_pbe and sweep_id and not sweep_pbe:
+        raise ValueError(
+            "Refusing inconsistent PBE sweep writeback:\n"
+            f"  structure     = {structure}\n"
+            f"  dataset_split = {dataset_split}\n"
+            f"  sweep_id      = {sweep_id}\n"
+            f"  run_dir       = {run_dir}\n"
+            "A PBE structure should not be written under a non-PBE sweep_id."
+        )
 
 
 def infer_sweep_id(run_dir: Path) -> str:
@@ -302,6 +440,25 @@ def passes_filters(run_dir: Path, structure: str, args: argparse.Namespace) -> b
     return True
 
 
+def is_valid_structure_name(name: str | None) -> bool:
+    if not name:
+        return False
+
+    name = normalize_structure_name(str(name))
+
+    if name in INVALID_STRUCTURE_NAMES:
+        return False
+
+    if name in KNOWN_STRUCTURES:
+        return True
+
+    # Conservative fallback:
+    # allow chemical-looking names, but reject generic path words.
+    if not re.match(r"^[A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$", name):
+        return False
+
+    return True
+
 # ============================================================
 # evaluation
 # ============================================================
@@ -374,6 +531,13 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     structure = infer_structure(run_dir, run_cfg)
     dataset_split = infer_dataset_split(run_dir)
     sweep_id = infer_sweep_id(run_dir)
+    
+    validate_structure_split_consistency(
+        structure=structure,
+        dataset_split=dataset_split,
+        sweep_id=sweep_id,
+        run_dir=run_dir,
+    )
 
     model_path = latest_model_path(run_dir)
     cif_path = Path(args.cif_path).resolve() if args.cif_path else default_cif_path(structure)
