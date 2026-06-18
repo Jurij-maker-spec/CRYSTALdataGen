@@ -49,7 +49,14 @@ def get_primitive_atoms_from_cif(file):
     return prim_atoms
 
 
-def freqs_from_analytical_hessian(atoms, calc, hessian_units="eV/Ang^2", tol_eig_negative=1e-8, print_freqs=False):
+def freqs_from_analytical_hessian(
+        atoms, 
+        calc, 
+        hessian_units="eV/Ang^2", 
+        tol_eig_negative=1e-8, 
+        print_freqs=False
+    ):
+    
     H_raw = calc.get_hessian(atoms=atoms)
     H = np.asarray(H_raw).reshape(3 * len(atoms), 3 * len(atoms))
 
