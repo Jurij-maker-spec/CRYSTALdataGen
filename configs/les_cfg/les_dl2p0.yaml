@@ -1,0 +1,6 @@
+# configs/les_cfg/les_dl2p0.yaml
+sigma: 1.0
+dl: 2.0
+remove_self_interaction: true
+use_atomwise: false
+

@@ -1,0 +1,63 @@
+structure: TiO2_rutil
+results_group_dir: TiO2_rutil_10_90_rec_cut
+
+dry_run: false
+smoke_test: false
+max_runs: null
+max_parallel_trainings: 1
+
+crystal_db_path: data/ref_db.h5
+
+eval_settings:
+  device: cuda
+  default_dtype: float64
+  frechet: true
+  fmax: 1.0e-11
+  compare_crystal_modes: true
+  crystal_hess_path: null
+  crystal_freq_out_path: null
+  crystal_hessian_units: hartree/bohr^2
+  write_ref_db: true
+  ref_db_path: data/ref_db.h5
+  use_ref_db_cache: true
+  force_reeval: false
+  plot_only: false
+
+base_config:
+  train_file: train_TiO2_rutil.xyz
+  valid_file: valid_TiO2_rutil.xyz
+  chem: TiO2
+  atomic_numbers: [8, 22]
+  model_type: MACELES
+  E0s: average
+  batch_size: 2
+  valid_batch_size: 2
+  max_epochs: 173
+  les_arguments: configs/les_cfg/les_dl2p0.yaml
+
+sweep_grid:
+  seed: [2]
+  r_max: [3.0, 4.0, 5.0, 6.0, 7.0]
+  batch_size: [2]
+  valid_batch_size: [2]
+  energy_weight: [2.0]
+  forces_weight: [75.0]
+  les_arguments:
+    - configs/les_cfg/les_dl0p75.yaml
+    - configs/les_cfg/les_dl1p0.yaml
+    - configs/les_cfg/les_dl1p5.yaml
+    - configs/les_cfg/les_dl2p0.yaml
+    - configs/les_cfg/les_dl2p5.yaml
+  use_stress: [false]
+  stress_weight: [2.0] 
+  
+dataset_file_sweep:
+  enabled: true
+  datasets:
+    n400:
+      dataset_size: 400
+      train_file: TiO2_rutil/train_TiO2_n400.xyz
+      valid_file: TiO2_rutil/valid_TiO2_n400.xyz
+
+
+  
