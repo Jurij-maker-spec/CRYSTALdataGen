@@ -250,6 +250,16 @@ def preview_run_commands(run_config_paths: list[Path]) -> list[dict[str, Any]]:
             "--seed", str(cfg["seed"]),
             "--r_max", str(cfg["r_max"]),
         ]
+        les_arguments = cfg.get("les_arguments")
+        if les_arguments is not None:
+            les_path = Path(les_arguments)
+            if not les_path.is_absolute():
+                les_path = PROJECT_ROOT / les_path
+
+            train_cmd += [
+                "--les_arguments",
+                str(les_path.resolve()),
+            ]
 
         if cfg.get("foundation_model") is not None:
             train_cmd += ["--foundation_model", str(cfg["foundation_model"])]

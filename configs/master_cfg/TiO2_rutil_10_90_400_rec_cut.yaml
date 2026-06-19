@@ -24,8 +24,6 @@ eval_settings:
   plot_only: false
 
 base_config:
-  train_file: train_TiO2_rutil.xyz
-  valid_file: valid_TiO2_rutil.xyz
   chem: TiO2
   atomic_numbers: [8, 22]
   model_type: MACELES

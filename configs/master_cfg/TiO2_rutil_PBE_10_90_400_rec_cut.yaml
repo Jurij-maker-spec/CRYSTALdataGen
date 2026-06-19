@@ -1,5 +1,5 @@
-structure: TiO2_rutil
-results_group_dir: TiO2_rutil_10_90_rec_cut
+structure: TiO2_rutil_PBE
+results_group_dir: TiO2_rutil_PBE_10_90_rec_cut
 
 dry_run: false
 smoke_test: false
@@ -24,8 +24,6 @@ eval_settings:
   plot_only: false
 
 base_config:
-  train_file: train_TiO2_rutil.xyz
-  valid_file: valid_TiO2_rutil.xyz
   chem: TiO2
   atomic_numbers: [8, 22]
   model_type: MACELES
@@ -60,4 +58,4 @@ dataset_file_sweep:
       valid_file: TiO2_rutil_PBE/valid_TiO2_PBE_n400.xyz
 
 
-  
+    

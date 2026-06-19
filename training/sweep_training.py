@@ -135,6 +135,20 @@ def format_float_for_name(value: float | int) -> str:
     return text.replace(".", "p")
 
 
+def les_tag_from_path(value: str | Path | None) -> str | None:
+    if value is None:
+        return None
+
+    stem = Path(str(value)).stem
+    stem = stem.replace("les_", "")
+    stem = stem.replace("_", "")
+
+    if stem.startswith("dl"):
+        return f"les{stem}"
+
+    return f"les{stem}"
+
+
 def make_run_name(cfg: dict[str, Any]) -> str:
     bits = [
         cfg["model_type"],
@@ -146,6 +160,9 @@ def make_run_name(cfg: dict[str, Any]) -> str:
         f"seed{cfg['seed']}",
         cfg["chem"],
     ]
+    les_tag = les_tag_from_path(cfg.get("les_arguments"))
+    if les_tag is not None:
+        bits.append(les_tag)
 
     if cfg.get("dataset_tag") is not None:
         bits.append(str(cfg["dataset_tag"]))
@@ -256,6 +273,7 @@ def write_sweep_manifest(
                 "forces_weight": cfg["forces_weight"],
                 "use_stress": cfg["use_stress"],
                 "stress_weight": cfg["stress_weight"],
+                "les_arguments": cfg.get("les_arguments"),
             }
             for cfg in configs
         ],

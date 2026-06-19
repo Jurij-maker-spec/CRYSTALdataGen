@@ -28,6 +28,13 @@ from typing import Any
 # HELPERS
 # ============================================================
 
+def resolve_project_path(value: str | Path, project_root: Path) -> Path:
+    p = Path(value)
+    if p.is_absolute():
+        return p.resolve()
+    return (project_root / p).resolve()
+
+
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -163,6 +170,18 @@ def build_train_command(cfg: dict[str, Any], paths: dict[str, Path]) -> list[str
         "--r_max", str(cfg["r_max"]),
     ]
 
+    les_arguments = cfg.get("les_arguments")
+    if les_arguments is not None:
+        les_path = resolve_project_path(
+            les_arguments,
+            paths["project_root"],
+        )
+        ensure_file_exists(les_path, "LES arguments file")
+        cmd += [
+            "--les_arguments",
+            str(les_path),
+        ]
+
     foundation_model = cfg.get("foundation_model")
     if foundation_model is not None:
         cmd += ["--foundation_model", str(foundation_model)]
@@ -241,7 +260,7 @@ def collect_run_hyperparams(cfg):
         "force_weight": cfg.get("force_weight", None),
         "r_max": cfg.get("r_max", None),
         "seed": cfg.get("seed", None),
-
+        "les_arguments": cfg.get("les_arguments", None),
     }
     return run_hyperparams
 
