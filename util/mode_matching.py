@@ -489,7 +489,7 @@ def plot_combined_overlap_heatmaps(
         constrained_layout=False,
     )
 
-    fig.subplots_adjust(wspace=0.1)
+    fig.subplots_adjust(wspace=0.005)
     # ============================================================
     # Left: single-mode overlap heatmap
     # Original overlap_matrix has:
@@ -512,6 +512,11 @@ def plot_combined_overlap_heatmaps(
 
     ax.set_xlabel(r"CRYSTAL modes in cm$^{-1}$")
     ax.set_ylabel(r"MACELES modes in cm$^{-1}$")
+    # ax.set_xlabel(r"HSEsol modes in cm$^{-1}$")
+    ax.xaxis.set_label_coords(0.5, -0.15)
+    # ax.set_ylabel(r"PBEsol modes in cm$^{-1}$")
+
+
 
     ax.text(
         0.03,
@@ -585,6 +590,10 @@ def plot_combined_overlap_heatmaps(
 
     ax.set_xlabel("CRYSTAL groups")
     ax.set_ylabel("MACELES groups")
+    # ax.set_xlabel("HSEsol groups")
+    ax.xaxis.set_label_coords(0.5, -0.15)
+    # ax.set_ylabel("PBEsol groups")
+
 
     ax.text(
         0.03,
@@ -654,6 +663,7 @@ def compare_mode_sets(
     title: str = "CRYSTAL vs MACE mode overlap",
     crystal_extra: dict | None = None,
     source: str = "unknown",
+    mode = None
 ):
     freqs_crys = np.asarray(freqs_crys, dtype=float)
     evecs_crys = np.asarray(evecs_crys, dtype=float)
@@ -729,6 +739,11 @@ def compare_mode_sets(
             freqs_test=freqs_mace,
             outfile=comb_heatmap_outfile,
         )
+
+    elif heatmap_outfile is None:
+        if mode == 'return_overlap_matrix':
+
+            return overlap_cut
 
     return {
         "crystal": {} if crystal_extra is None else crystal_extra,

@@ -410,11 +410,12 @@ def make_composite_score(
     # Spectrum agreement (strongly weighted)
     # ------------------------------------------------------------
 
-    # if spectrum_rel_l2 is not None:
-    #     components["spectrum_l2_term"] = 60.0 * float(spectrum_rel_l2)
-    # else:
-    #     components["spectrum_l2_term"] = 40.0
-    # score += components["spectrum_l2_term"]
+    if spectrum_rel_l2 is not None:
+        print("spectrum rel_L2", float(spectrum_rel_l2))
+        components["spectrum_l2_term"] = 40.0 * float(spectrum_rel_l2)
+    else:
+        components["spectrum_l2_term"] = 40.0
+    score += components["spectrum_l2_term"]
 
     # ------------------------------------------------------------
     # Intensity correlation

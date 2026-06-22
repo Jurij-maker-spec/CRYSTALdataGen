@@ -15,11 +15,16 @@ sys.path.insert(0, str(PYTHON_SCRIPTS_ROOT))
 
 from util.ref_db import (
     read_crystal_ir_reference,
+    read_crystal_modes,
     read_model_evaluation,
     list_model_evaluations_for_structure,
     format_hyperparams,
 )
 from util.plotting import restore_degeneracies, perform_KDE
+from util.mode_matching import (
+    compare_mode_sets,
+    _slice_CMAP
+)
 
 DEFAULT_REF_DB = PROJECT_ROOT / "data" / "ref_db.h5"
 DEFAULT_STYLE = PROJECT_ROOT / "util" / "style.mplstyle"
@@ -260,6 +265,7 @@ def read_reference_spectrum(ref_db: Path, structure: str, fwhm: float):
     return x, kde
 
 
+
 def _short_run_label(run_id: str, max_len: int = 44) -> str:
     """
     Keep long run names readable in stacked plots.
@@ -325,22 +331,25 @@ def plot_hse_pbe_ir_grid(
 ) -> None:
     apply_style(style_path)
 
-    colors = CMAP([0.1, 0.8])
+    colors = CMAP([0.2, 0.65])
 
     fig, axes = plt.subplots(
         2,
         2,
-        figsize=(12, 7),
+        figsize=(12, 6),
         sharey=True,
         constrained_layout=True,
     )
     i = 0
+    abcdlabel = ['a)', 'b)', 'c)', 'd)']
     for ax, (hse_name, pbe_name, title) in zip(axes.ravel(), STRUCTURE_PAIRS):
         x_hse, y_hse = read_reference_spectrum(ref_db, hse_name, fwhm)
         x_pbe, y_pbe = read_reference_spectrum(ref_db, pbe_name, fwhm)
 
         ax.plot(x_hse, y_hse, lw=2, color=colors[1], label="HSEsol" if i == 0 else '')
+        ax.fill_between(x_hse, y_hse, color=colors[1], alpha=0.1)
         ax.plot(x_pbe, y_pbe, lw=2, ls='--', color=colors[0], label="PBEsol" if i == 0 else '')
+        ax.fill_between(x_pbe, y_pbe, color=colors[0], alpha=0.1)
         ax.text(
             0.50,
             0.95,
@@ -351,11 +360,28 @@ def plot_hse_pbe_ir_grid(
             size=22,
             bbox=dict(boxstyle="round", facecolor='white', alpha=0.85), 
             )
+        ax.text(
+            0.05,
+            0.95,
+            abcdlabel[i],
+            transform=ax.transAxes,
+            va='top', 
+            ha='center',
+            size=24,
+        )
         i += 1
     
     fig.supylabel('Relative IR intensity')
     fig.supxlabel(r"Wavenumber in cm$^{-1}$")
-    fig.legend(bbox_to_anchor=(0.65, 0.65), fontsize=24, framealpha=0.9, shadow=True)
+    # fig.legend(bbox_to_anchor=(0.65, 0.65), fontsize=24, framealpha=0.9, shadow=True)
+    fig.legend(
+        loc="lower center", 
+        ncol=2, 
+        bbox_to_anchor=(0.5, 0.98), 
+        fontsize=22, 
+        framealpha=0.9, 
+        frameon=True,
+    )
     # fig.suptitle('Comparison of reference  methods')
 
     outdir.mkdir(parents=True, exist_ok=True)
@@ -369,219 +395,6 @@ def plot_hse_pbe_ir_grid(
 
     print(f"Saved: {png}")
     print(f"Saved: {pdf}")
-
-
-def plot_top_N_of_a_structure_old(
-    *,
-    ref_db: Path,
-    structure: str,
-    outdir: Path,
-    outfile_stem: str | None = None,
-    top_n: int = 9,
-    metric: str = "composite_score",
-    selection: str = "top",
-    fwhm: float = 12.0,
-    style_path: Path | None = None,
-    y_offset: float = 1.15,
-    normalize_models: bool = True,
-    reference_at_bottom: bool = True,
-) -> None:
-    """
-    Plot the top N cached model IR spectra for one structure.
-
-    The selected runs are ranked by `metric`. For lower-is-better metrics like
-    composite_score, the best N are selected. They are then plotted from
-    worst-of-top-N at the top to best at the bottom, directly above the
-    CRYSTAL reference.
-
-    Layout:
-        worst selected model
-        ...
-        best selected model
-        CRYSTAL reference
-    """
-    apply_style(style_path)
-    fs = 16
-    ref_db = Path(ref_db)
-    outdir = Path(outdir)
-
-    if "TiO2" in structure:
-        x_base = 0.8
-        tio2_lim = True
-    else:
-        x_base = 0.01
-        tio2_lim = False
-
-    if top_n < 1:
-        raise ValueError("top_n must be >= 1")
-
-    rows = list_model_evaluations_for_structure(
-        ref_db,
-        structure,
-        metric=metric,
-        require_ir_spectrum=True,
-        require_metric=True,
-        sort=True,
-    )
-
-    if not rows:
-        raise ValueError(
-            f"No model evaluations with metric '{metric}' and IR spectra "
-            f"found for structure '{structure}'."
-        )
-
-    if selection == "top":
-        selected = rows[:top_n]
-
-    elif selection == "spaced":
-        selected = _select_rank_spaced(rows, top_n)
-
-    else:
-        raise ValueError(
-            f"Unknown selection mode: {selection}. "
-            "Use 'top' or 'spaced'."
-        )
-
-    # Plot worst selected model at top and best selected model closest to CRYSTAL.
-    # rows are ranked best -> worst, so selected is also ordered best -> worst.
-    selected_for_plot = list(reversed(selected))
-
-    x_ref, y_ref = read_reference_spectrum(ref_db, structure, fwhm)
-    y_ref = _normalize_spectrum(y_ref)
-
-    n_models = len(selected_for_plot)
-
-    fig_height = max(4.5, 0.55 * (n_models + 1))
-    fig, ax = plt.subplots(
-        1,
-        1,
-        figsize=(14, fig_height),
-        constrained_layout=True,
-    )
-
-    colors = CMAP(np.linspace(0.15, 0.85, max(n_models, 2)))
-
-    # ------------------------------------------------------------
-    # CRYSTAL reference at bottom
-    # ------------------------------------------------------------
-    ref_offset = 0.0
-    ax.plot(
-        x_ref,
-        y_ref + ref_offset,
-        color="black",
-        lw=1.2,
-        label="CRYSTAL reference",
-        zorder=5,
-    )
-    
-
-    ax.text(
-        x_base,
-        ref_offset + 0.08,
-        f"CRYSTAL {FUNCTIONAL[structure]}",
-        transform=ax.get_yaxis_transform(),
-        ha="left",
-        va="bottom",
-        fontsize=fs,
-    )
-
-    # ------------------------------------------------------------
-    # Model spectra
-    # ------------------------------------------------------------
-    ytick_positions = [ref_offset]
-    ytick_labels = ["0"]
-
-    for plot_idx, row in enumerate(selected_for_plot):
-        # plot_idx = 0 is worst-of-selected.
-        # Put it highest; best ends up closest to CRYSTAL.
-        offset = (n_models - plot_idx) * y_offset
-
-        ev = read_model_evaluation(
-            ref_db,
-            structure,
-            run_id=row["run_id"],
-            dataset_split=row["dataset_split"],
-            sweep_id=row["sweep_id"],
-        )
-
-        x = np.asarray(ev["nu_grid_cm1"], dtype=float)
-        y = np.asarray(ev["ir_spec"], dtype=float)
-
-        if normalize_models:
-            y = _normalize_spectrum(y)
-
-        # Rank in true sorted order: 1 = best.
-        true_rank = rows.index(row) + 1
-        metric_value = row["metric_value"]
-
-        label = (
-            f"{true_rank:4d}: {metric}={metric_value:.3g}, "
-            #f"{_short_run_label(row['run_id'])}"
-        )
-
-        ax.plot(
-            x,
-            y + offset,
-            lw=1.5,
-            color=colors[plot_idx],
-            label=label,
-        )
-
-        _position_text(ax, metric_value, true_rank, offset=offset, base_x=x_base)
-
-        ytick_positions.append(offset)
-        ytick_labels.append(f"{true_rank}")
-
-
-    if tio2_lim:
-        ax.set_xlim(0,820)
-    # ------------------------------------------------------------
-    # Axes and labels
-    # ------------------------------------------------------------
-    ax.set_xlabel(r"Wavenumber in cm$^{-1}$")
-    ax.set_ylabel("Relative IR intensity")
-
-    title_metric = metric.replace("_", r"\_")
-    # ax.set_title(rf"{structure}: top {len(selected)} model IR spectra ranked by {title_metric}")
-
-    ax.set_yticks(ytick_positions)
-    # ax.set_yticklabels(ytick_labels)
-    ax.set_yticklabels('')
-
-    ax.set_ylim(-0.10, (n_models + 1) * y_offset)
-    ax.margins(x=0.01)
-
-    # Keep legend outside because run IDs are long.
-    # ax.legend(
-    #     loc="center left",
-    #     bbox_to_anchor=(1.01, 0.5),
-    #     fontsize=8,
-    #     frameon=False,
-    # )
-
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    if outfile_stem is None:
-        safe_metric = metric.replace("/", "_")
-        outfile_stem = f"{structure}_{selection}_{len(selected)}_{safe_metric}_ir_spectra"
-
-    png = outdir / f"{outfile_stem}.png"
-    pdf = outdir / f"{outfile_stem}.pdf"
-
-    fig.savefig(png, dpi=200, bbox_inches="tight")
-    fig.savefig(pdf, bbox_inches="tight")
-    plt.close(fig)
-
-    print(f"Saved: {png}")
-    print(f"Saved: {pdf}")
-
-    print()
-    print(f"Top {len(selected)} runs for {structure} by {metric}:")
-    for i, row in enumerate(selected, start=1):
-        print(
-            f"{i:>2d}. {row['metric_value']:.6g}  "
-            f"{row['dataset_split']} / {row['sweep_id']} / {row['run_id']}"
-        )
 
 
 def plot_top_N_of_a_structure(
@@ -711,14 +524,23 @@ def plot_top_N_of_a_structure(
     # ------------------------------------------------------------
     # CRYSTAL reference at bottom
     # ------------------------------------------------------------
+    fill_offset=0.025
     ref_offset = 0.0
     ax.plot(
         x_ref,
         y_ref + ref_offset,
+        ref_offset-fill_offset,
         color="black",
         lw=1.2,
         label="CRYSTAL reference",
         zorder=5,
+    )
+    ax.fill_between(
+        x_ref, 
+        y_ref+ref_offset,
+        ref_offset,
+        color = "black",
+        alpha = 0.1
     )
 
     ax.text(
@@ -772,6 +594,13 @@ def plot_top_N_of_a_structure(
             lw=1.5,
             color=colors[plot_idx],
             label=label,
+        )
+        ax.fill_between(
+            x,
+            y+offset,
+            offset-fill_offset,
+            color=colors[plot_idx],
+            alpha=0.2
         )
 
         # Preferred if you update _position_text to accept extra_text.
@@ -852,6 +681,177 @@ def plot_top_N_of_a_structure(
         )
 
 
+def plot_hse_pbe_phonon_grid(
+    *,
+    ref_db: Path,
+    outdir: Path,
+    outfile_stem: str,
+    style_path: Path | None,
+) -> None:
+    apply_style(style_path)
+
+    colors = CMAP([0.2, 0.65])
+
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=(9, 9),
+        # sharey=True,
+        # sharex=True,
+        constrained_layout=True,
+    )
+    i = 0
+    abcdlabel = ['a)', 'b)', 'c)', 'd)']
+    for ax, (hse_name, pbe_name, title) in zip(axes.ravel(), STRUCTURE_PAIRS):
+        hse_modes = read_crystal_modes(ref_db, hse_name)['freqs_cm']
+        pbe_modes = read_crystal_modes(ref_db, pbe_name)['freqs_cm']
+
+        ax.scatter(
+            hse_modes,
+            pbe_modes,
+            s=160,
+            marker='d',
+            alpha=0.66,
+            edgecolors=CMAP([0.3]),
+            linewidths = 0.75,
+            color = CMAP([0.8]),
+            label=r"$\Gamma$-Mode correlation",
+        )
+        f_min = min(np.min(hse_modes), np.min(pbe_modes))
+        f_max = max(np.max(hse_modes), np.max(pbe_modes))
+        pad = 0.05 * (f_max - f_min) if f_max > f_min else 10.0
+        f_min -= pad
+        f_max += pad
+        ax.plot(
+            [f_min, f_max],
+            [f_min, f_max],
+            ls="--",
+            lw=0.7,
+            color="grey",
+        )
+        title = f'{abcdlabel[i]} '+title
+        ax.text(
+            0.05,
+            0.95,
+            title,
+            transform=ax.transAxes,
+            va='top', 
+            ha='left',
+            size=22,
+            bbox=dict(boxstyle="round", facecolor='white', alpha=0.85), 
+            )
+        ax.set_xlim(f_min, f_max)
+        ax.set_ylim(f_min, f_max)
+        ax.set_aspect("equal", adjustable="box")
+        # ax.legend()
+
+    fig.supylabel(r'PBEsol Modes in cm$^{-1}$')
+    fig.supxlabel(r'HSEsol Modes in cm$^{-1}$')
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(
+        handles[0:1], 
+        labels[0:1],
+        loc="lower center", 
+        ncol=1, 
+        bbox_to_anchor=(0.5, 0.98), 
+        fontsize=22, 
+        framealpha=0.9, 
+        frameon=True,
+
+    )
+
+    png = outdir / f"{outfile_stem}.png"
+    pdf = outdir / f"{outfile_stem}.pdf"
+
+    fig.savefig(png, dpi=200, bbox_inches="tight")
+    fig.savefig(pdf, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_modes(
+    *,
+    ref_db: Path,
+    outdir: Path,
+    outfile_stem: str,
+    style_path: Path | None,
+    skip_first: int = 3
+) -> None:
+    apply_style(style_path)
+
+    colors = CMAP([0.2, 0.65])
+
+    fig, axs = plt.subplots(
+        2,
+        2,
+        figsize=(10, 9),
+        constrained_layout=True,
+    )
+
+    abclabels = ['a', 'b', 'c', 'd']
+    for ax, (struct_hse, struct_pbe, label), alph in zip(axs.ravel(), STRUCTURE_PAIRS, abclabels):
+ 
+        hse = read_crystal_modes(ref_db, struct_hse)
+        pbe = read_crystal_modes(ref_db, struct_pbe)
+        
+        freqs_ref = hse['freqs_cm']
+        freqs_test = pbe['freqs_cm']
+
+        overlap_matrix = compare_mode_sets(
+            freqs_crys=hse['freqs_cm'],
+            evecs_crys=hse['eigvecs_mw'],
+            mace_modes=pbe,
+            mode='return_overlap_matrix',
+            heatmap_outfile=None
+        )
+        overlap_matrix = np.asarray(overlap_matrix, dtype=float)
+        im = ax.imshow(
+            overlap_matrix.T,
+            origin="lower",
+            aspect="equal",
+            vmin=0.0,
+            vmax=1.0,
+            cmap=_slice_CMAP(CMAP)
+        )
+
+        ax.text(
+            0.03,
+            0.95,
+            f"{alph}) Mode Overlap {label}",
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            size=18,
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+        )
+
+        # x-axis: HSEsol frequencies
+        xlabels = [f"{f:.0f}" for f in freqs_ref[skip_first:]]
+        step_x = max(1, len(xlabels) // 12)
+        ax.set_xticks(np.arange(0, len(xlabels), step_x))
+        ax.set_xticklabels(xlabels[::step_x], rotation=90)
+
+        # y-axis: PBEsol frequencies
+        ylabels = [f"{f:.0f}" for f in freqs_test[skip_first:]]
+        step_y = max(1, len(ylabels) // 12)
+        ax.set_yticks(np.arange(0, len(ylabels), step_y))
+        ax.set_yticklabels(ylabels[::step_y])
+
+        #ax.set_xlabel(r"HSEsol modes in cm$^{-1}$")
+        #ax.xaxis.set_label_coords(0.5, -0.15)
+        #ax.set_ylabel(r"PBEsol modes in cm$^{-1}$")
+
+    cbar = fig.colorbar(im, ax=axs, shrink=0.6)
+    cbar.set_label("Overlap")
+
+    fig.supylabel(r"PBEsol Modes in cm$^{-1}$")
+    fig.supxlabel(r"HSEsol Modes in cm$^{-1}$")
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    png = outdir / f"{outfile_stem}.png"
+    pdf = outdir / f"{outfile_stem}.pdf"
+    fig.savefig(png, dpi=200, bbox_inches="tight")
+    fig.savefig(pdf, bbox_inches="tight")
+
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ref-db", type=Path, default=DEFAULT_REF_DB)
@@ -865,6 +865,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_mode_grid = sub.add_parser(
+        "mode-overlap-grid",
+        help="Plot HSEsol vs PBEsol CRYSTAL reference modes in a NxN grid."
+    )
+    add_common_args(p_mode_grid)
+    p_mode_grid.add_argument("--outfile-stem", default="hse_pbe_mode_overlap")
+
+    p_phonon_grid = sub.add_parser(
+        "phonon-grid",
+        help="Plot HSEsol vs PBEsol CRYSTAL reference phonons in a 2x2 grid."
+    )
+    add_common_args(p_phonon_grid)
+    p_phonon_grid.add_argument("--outfile-stem", default="hse_pbe_phonon_grid")
+
+
     p_grid = sub.add_parser(
         "ir-grid",
         help="Plot HSEsol vs PBEsol CRYSTAL reference IR spectra in a 2x2 grid.",
@@ -945,6 +961,22 @@ def main() -> None:
             style_path=args.style,
             y_offset=args.y_offset,
             normalize_models=not args.no_normalize_models,
+        )
+
+    elif args.command == "phonon-grid":
+        plot_hse_pbe_phonon_grid(
+            ref_db=args.ref_db,
+            outdir=args.outdir,
+            outfile_stem=args.outfile_stem,
+            style_path=args.style,
+        )
+
+    elif args.command == "mode-overlap-grid":
+        plot_modes(
+            ref_db=args.ref_db,
+            outdir=args.outdir,
+            outfile_stem=args.outfile_stem,
+            style_path=args.style,
         )
 
     else:
