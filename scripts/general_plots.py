@@ -810,7 +810,7 @@ def plot_modes(
             aspect="equal",
             vmin=0.0,
             vmax=1.0,
-            cmap=_slice_CMAP(CMAP)
+            cmap=_slice_CMAP('managua_r')
         )
 
         ax.text(
