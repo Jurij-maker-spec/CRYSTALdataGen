@@ -320,7 +320,6 @@ def _position_text(ax, score, true_rank, fs=18, offset=1.1, base_x=0.01):
     )
 
 
-
 def plot_hse_pbe_ir_grid(
     *,
     ref_db: Path,
@@ -681,6 +680,329 @@ def plot_top_N_of_a_structure(
         )
 
 
+def plot_best_model_result_figures_for_structure(
+    *,
+    ref_db: Path,
+    structure: str,
+    outdir_root: Path = Path("/home/jha/jha/python_scripts/master_thesis/figures/results"),
+    metric: str = "composite_score",
+    include_functional_pair: bool = True,
+    hparam_filters: dict[str, object] | None = None,
+    style_path: Path | None = DEFAULT_STYLE,
+    normalize_ir: bool = True,
+    skip_first: int = 3,
+    degeneracy_tol: float = 0.5,
+    skip_missing: bool = True,
+) -> dict[str, dict]:
+    """
+    Plot best-model result figures for one structure, optionally for both
+    HSEsol and PBEsol variants.
+
+    For each selected structure, this creates:
+
+        <structure>_ir_corr_comp.pdf
+        <structure>_mode_overlap_combined.pdf
+
+    and saves them into a pooled per-base-structure directory, e.g.
+
+        /home/jha/jha/python_scripts/master_thesis/figures/results/AlN/
+
+    Parameters
+    ----------
+    ref_db
+        Path to ref_db.h5.
+
+    structure
+        Structure name, e.g. "AlN", "AlN_PBE", "SiO2", "TiO2_rutil".
+
+    outdir_root
+        Root output directory. The function creates one subdirectory per
+        base structure.
+
+    metric
+        Ranking metric. Lower is assumed to be better, consistent with
+        list_model_evaluations_for_structure(..., sort=True).
+
+    include_functional_pair
+        If True and `structure` belongs to STRUCTURE_PAIRS, plot both
+        HSEsol and PBEsol variants into the same base-structure directory.
+
+    hparam_filters
+        Optional filters, same logic as plot_top_N_of_a_structure(), e.g.
+        {"r_max": 4.0, "forces_weight": 75}.
+
+    style_path
+        Matplotlib style file.
+
+    normalize_ir
+        Normalize the cached model IR spectrum before plotting.
+
+    skip_first
+        Number of acoustic modes to skip in mode-overlap plots.
+
+    degeneracy_tol
+        Frequency tolerance in cm^-1 for degenerate-group mode matching.
+
+    skip_missing
+        If True, missing PBE/HSEsol variants are skipped with a warning.
+        If False, missing data raises an error.
+
+    Returns
+    -------
+    written
+        Dict keyed by plotted structure, containing selected run metadata
+        and output paths.
+    """
+    from util.plotting import plot_ir_spectrum_with_frequency_correlation
+    from util.mode_matching import plot_combined_overlap_heatmaps
+
+    apply_style(style_path)
+
+    ref_db = Path(ref_db)
+    outdir_root = Path(outdir_root)
+
+    def _resolve_structure_family(structure_name: str):
+        """
+        Return base structure and list of structures to plot.
+
+        Example
+        -------
+        structure_name="AlN"     -> ("AlN", ["AlN", "AlN_PBE"])
+        structure_name="AlN_PBE" -> ("AlN", ["AlN", "AlN_PBE"])
+        """
+        for hse_name, pbe_name, _label in STRUCTURE_PAIRS:
+            if structure_name in {hse_name, pbe_name}:
+                if include_functional_pair:
+                    return hse_name, [hse_name, pbe_name]
+                return hse_name, [structure_name]
+
+        # Fallback for structures not listed in STRUCTURE_PAIRS.
+        if structure_name.endswith("_PBE"):
+            base_name = structure_name[:-4]
+        else:
+            base_name = structure_name
+
+        return base_name, [structure_name]
+
+    def _first_existing(mapping: dict, keys: list[str], *, required: bool = True):
+        for key in keys:
+            if key in mapping:
+                value = mapping[key]
+                if value is not None:
+                    return value
+
+        if required:
+            raise KeyError(
+                "None of the expected keys were found. "
+                f"Tried: {keys}. Available keys: {sorted(mapping.keys())}"
+            )
+
+        return None
+
+    base_structure, structures_to_plot = _resolve_structure_family(structure)
+    outdir = outdir_root / base_structure
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    written: dict[str, dict] = {}
+
+    for struct in structures_to_plot:
+        # --------------------------------------------------------
+        # Rank cached model evaluations and select the best one.
+        # --------------------------------------------------------
+        rows_all = list_model_evaluations_for_structure(
+            ref_db,
+            struct,
+            metric=metric,
+            require_ir_spectrum=True,
+            require_metric=True,
+            sort=True,
+        )
+
+        if not rows_all:
+            msg = (
+                f"No cached model evaluations with metric '{metric}' and "
+                f"IR spectrum found for structure '{struct}'."
+            )
+            if skip_missing:
+                print(f"WARNING: {msg}")
+                continue
+            raise ValueError(msg)
+
+        rows = _filter_rows_by_hyperparams(rows_all, hparam_filters)
+
+        if not rows:
+            msg = (
+                f"No cached model evaluations left after filtering for "
+                f"structure '{struct}' with filters {hparam_filters}."
+            )
+            if skip_missing:
+                print(f"WARNING: {msg}")
+                continue
+            raise ValueError(msg)
+
+        best = rows[0]
+        best_rank = rows_all.index(best) + 1
+
+        ev = read_model_evaluation(
+            ref_db,
+            struct,
+            run_id=best["run_id"],
+            dataset_split=best["dataset_split"],
+            sweep_id=best["sweep_id"],
+        )
+
+        # --------------------------------------------------------
+        # Required cached model arrays.
+        # --------------------------------------------------------
+        freqs_model = np.asarray(
+            _first_existing(
+                ev,
+                ["freqs_cm", "frequencies_cm", "frequencies_cm1"],
+            ),
+            dtype=float,
+        )
+
+        eigvecs_model = np.asarray(
+            _first_existing(
+                ev,
+                ["eigvecs_mw", "eigenvectors_mw", "modes_mw"],
+            ),
+            dtype=float,
+        )
+
+        nu_grid = np.asarray(
+            _first_existing(
+                ev,
+                ["nu_grid_cm1", "nu_grid", "wavenumber_grid_cm1"],
+            ),
+            dtype=float,
+        )
+
+        ir_spec = np.asarray(
+            _first_existing(
+                ev,
+                ["ir_spec", "ir_spectrum", "spectrum"],
+            ),
+            dtype=float,
+        )
+
+        intensities = _first_existing(
+            ev,
+            ["intensities", "ir_intensities", "intensities_km_mol"],
+            required=False,
+        )
+        if intensities is None:
+            intensities = np.zeros_like(freqs_model)
+        intensities = np.asarray(intensities, dtype=float)
+
+        if normalize_ir:
+            ir_spec = _normalize_spectrum(ir_spec)
+
+        # --------------------------------------------------------
+        # Read CRYSTAL reference modes once. Used for both plots:
+        # frequency correlation and mode-overlap.
+        # --------------------------------------------------------
+        crystal_modes = read_crystal_modes(ref_db, struct)
+        freqs_crys = np.asarray(crystal_modes["freqs_cm"], dtype=float)
+        eigvecs_crys = np.asarray(crystal_modes["eigvecs_mw"], dtype=float)
+
+        # --------------------------------------------------------
+        # 1) IR spectrum + frequency-correlation plot.
+        # Passing a .png path creates both .png and .pdf in your
+        # current util.plotting implementation.
+        # --------------------------------------------------------
+        ir_out_png = outdir / f"{struct}_ir_corr_comp.png"
+
+        plot_ir_spectrum_with_frequency_correlation(
+            freqs_cm=freqs_model,
+            intensities=intensities,
+            nu_grid=nu_grid,
+            ir_spec=ir_spec,
+            structure=struct,
+            crystal_freqs_cm=freqs_crys,
+            crystal_db_path=ref_db,
+            outfile=ir_out_png,
+            functional = FUNCTIONAL[struct]
+        )
+
+        ir_out_pdf = ir_out_png.with_suffix(".pdf")
+
+        # --------------------------------------------------------
+        # 2) Combined mode-overlap plot.
+        # We call compare_mode_sets without heatmap_outfile to avoid
+        # writing the separate single/group heatmaps, then write only
+        # the combined figure.
+        # --------------------------------------------------------
+        mace_modes = {
+            "freqs_cm": freqs_model,
+            "eigvecs_mw": eigvecs_model,
+        }
+
+        mode_result = compare_mode_sets(
+            freqs_crys=freqs_crys,
+            evecs_crys=eigvecs_crys,
+            mace_modes=mace_modes,
+            skip_first=skip_first,
+            degeneracy_tol=degeneracy_tol,
+            heatmap_outfile=None,
+            title=f"{struct}: CRYSTAL vs MACELES mode overlap",
+        )
+
+        mode_out_png = outdir / f"{struct}_mode_overlap_combined.png"
+
+        plot_combined_overlap_heatmaps(
+            overlap_matrix=mode_result["overlap_cut"],
+            group_overlap_matrix=mode_result["group_overlap_matrix"],
+            group_matches=mode_result["subgroups"],
+            freqs_ref=freqs_crys,
+            freqs_test=freqs_model,
+            skip_first=skip_first,
+            outfile=mode_out_png,
+            functional = FUNCTIONAL[struct]
+        )
+
+        mode_out_pdf = mode_out_png.with_suffix(".pdf")
+
+        hp_label = best.get("hyperparam_label", "")
+        if not hp_label:
+            hp_label = format_hyperparams(best.get("hyperparameters", {}))
+
+        written[struct] = {
+            "structure": struct,
+            "metric": metric,
+            "metric_value": best["metric_value"],
+            "global_rank": best_rank,
+            "dataset_split": best["dataset_split"],
+            "sweep_id": best["sweep_id"],
+            "run_id": best["run_id"],
+            "hyperparameters": best.get("hyperparameters", {}),
+            "hyperparam_label": hp_label,
+            "ir_corr_comp_pdf": ir_out_pdf,
+            "mode_overlap_combined_pdf": mode_out_pdf,
+            "outdir": outdir,
+        }
+
+        print()
+        print(f"Best model for {struct}")
+        print("-" * 80)
+        print(f"rank          : {best_rank}")
+        print(f"{metric:<14}: {best['metric_value']:.6g}")
+        print(f"hyperparams   : {hp_label}")
+        print(f"dataset split : {best['dataset_split']}")
+        print(f"sweep_id      : {best['sweep_id']}")
+        print(f"run_id        : {best['run_id']}")
+        print(f"saved         : {ir_out_pdf}")
+        print(f"saved         : {mode_out_pdf}")
+
+    if not written:
+        raise RuntimeError(
+            f"No figures were written for structure '{structure}'. "
+            "Check whether cached evaluations exist for the requested structure(s)."
+        )
+
+    return written
+
+
 def plot_hse_pbe_phonon_grid(
     *,
     ref_db: Path,
@@ -929,6 +1251,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use stored model spectrum amplitudes without renormalizing each spectrum.",
     )
 
+    p_best_results = sub.add_parser(
+        "best-result-figures",
+        help=(
+            "Plot IR correlation and combined mode-overlap figures for the "
+            "best cached model of a structure. By default also plots the "
+            "paired HSEsol/PBEsol functional if available."
+        ),
+    )
+    add_common_args(p_best_results)
+    p_best_results.add_argument("--structure", required=True)
+    p_best_results.add_argument("--metric", default="composite_score")
+    p_best_results.add_argument(
+        "--outdir-root",
+        type=Path,
+        default=Path("/home/jha/jha/python_scripts/master_thesis/figures/results"),
+    )
+    p_best_results.add_argument(
+        "--single-functional",
+        action="store_true",
+        help="Only plot the requested structure, not the paired functional.",
+    )
+    p_best_results.add_argument(
+        "--hparam",
+        action="append",
+        default=None,
+        help=(
+            "Filter by hyperparameter before selecting the best model. "
+            "Examples: --hparam rmax=4 --hparam fw=75 --hparam seed=2"
+        ),
+    )
+    p_best_results.add_argument("--skip-first", type=int, default=3)
+    p_best_results.add_argument("--degeneracy-tol", type=float, default=0.5)
+    p_best_results.add_argument(
+        "--no-normalize-ir",
+        action="store_true",
+        help="Use stored model spectrum amplitudes without renormalizing.",
+    )
+
+
     return parser
 
 
@@ -977,6 +1338,22 @@ def main() -> None:
             outdir=args.outdir,
             outfile_stem=args.outfile_stem,
             style_path=args.style,
+        )
+
+    elif args.command == "best-result-figures":
+        hparam_filters = _parse_hparam_filters(args.hparam)
+
+        plot_best_model_result_figures_for_structure(
+            ref_db=args.ref_db,
+            structure=args.structure,
+            outdir_root=args.outdir_root,
+            metric=args.metric,
+            include_functional_pair=not args.single_functional,
+            hparam_filters=hparam_filters,
+            style_path=args.style,
+            normalize_ir=not args.no_normalize_ir,
+            skip_first=args.skip_first,
+            degeneracy_tol=args.degeneracy_tol,
         )
 
     else:

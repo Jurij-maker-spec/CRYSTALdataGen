@@ -1,0 +1,3 @@
+conda activate mace_env_3_12
+
+nohup python -u run_master.py --config configs/your_config.yaml > run_master.log 2>&1 & 

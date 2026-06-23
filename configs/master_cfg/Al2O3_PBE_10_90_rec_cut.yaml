@@ -1,7 +1,5 @@
-structure: TiO2_rutil_PBE
-results_group_dir: TiO2_rutil_PBE_25_75
-resume_sweep_dir: results/TiO2_rutil_PBE_25_75/TiO2_rutil_PBE_master_eval_full_260616_194653/
-
+structure: Al2O3_PBE
+results_group_dir: Al2O3_PBE
 
 dry_run: false
 smoke_test: false
@@ -26,8 +24,10 @@ eval_settings:
   plot_only: false
 
 base_config:
-  chem: TiO2
-  atomic_numbers: [8, 22]
+  train_file: train_Al2O3_PBE_539.xyz
+  valid_file: valid_Al2O3_PBE_60.xyz
+  chem: Al2O3
+  atomic_numbers: [8, 13]
   model_type: MACELES
   E0s: average
   batch_size: 2
@@ -35,21 +35,19 @@ base_config:
   max_epochs: 173
 
 sweep_grid:
-  seed: [1, 2, 3]
-  r_max: [6.75, 7.0, 7.25]
-  batch_size: [2]
-  valid_batch_size: [2]
-  energy_weight: [1.0, 2.0, 3.0]
-  forces_weight: [50, 75.0, 100.0]
+  seed: [2]
+  r_max: [2.5, 3.0, 3.5, ]
+  batch_size: [1]
+  valid_batch_size: [1]
+  energy_weight: [2.0]
+  forces_weight: [100.0]
+  les_arguments:
+    - configs/les_cfg/les_dl0p75.yaml
+    - configs/les_cfg/les_dl1p0.yaml
+    - configs/les_cfg/les_dl1p5.yaml
+    - configs/les_cfg/les_dl2p0.yaml
+    - configs/les_cfg/les_dl2p5.yaml
   use_stress: [false]
   stress_weight: [2.0] 
-
-dataset_file_sweep:
-  enabled: true
-  datasets:
-    n548:
-      dataset_size: 548
-      train_file: TiO2_rutil_PBE/train_SiO2_PBE_n548.xyz
-      valid_file: TiO2_rutil_PBE/valid_SiO2_PBE_n548.xyz
 
   

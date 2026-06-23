@@ -19,7 +19,7 @@ mpl.style.use('/home/jha/jha/python_scripts/CRYSTALdataGen/util/style.mplstyle')
 CMAP = 'managua_r'
 
 def _slice_CMAP(cmap):
-    full_cmap = cm.get_cmap(cmap)
+    full_cmap = plt.get_cmap(cmap)
     colors = full_cmap(np.linspace(0.4, 1.0, 512))
     sliced_cmap = ListedColormap(colors)
     return sliced_cmap
@@ -469,6 +469,7 @@ def plot_combined_overlap_heatmaps(
     freqs_test: np.ndarray,
     skip_first: int = 3,
     outfile: str | Path = "combined_overlap_heatmaps.png",
+    functional = None
 ):
     """
     Plot mode-overlap and degenerate-group overlap heatmaps side-by-side.
@@ -510,8 +511,8 @@ def plot_combined_overlap_heatmaps(
         cmap=cmap
     )
 
-    ax.set_xlabel(r"CRYSTAL modes in cm$^{-1}$")
-    ax.set_ylabel(r"MACELES modes in cm$^{-1}$")
+    ax.set_xlabel(r"CRYSTAL Modes in cm$^{-1}$")
+    ax.set_ylabel(r"MACELES Modes in cm$^{-1}$")
     # ax.set_xlabel(r"HSEsol modes in cm$^{-1}$")
     ax.xaxis.set_label_coords(0.5, -0.15)
     # ax.set_ylabel(r"PBEsol modes in cm$^{-1}$")
@@ -521,7 +522,7 @@ def plot_combined_overlap_heatmaps(
     ax.text(
         0.03,
         0.95,
-        "a) Mode overlap",
+        "a) Mode Overlap",
         transform=ax.transAxes,
         va="top",
         ha="left",
@@ -588,8 +589,8 @@ def plot_combined_overlap_heatmaps(
     ax.set_yticks(np.arange(len(ylabels)))
     ax.set_yticklabels(ylabels)
 
-    ax.set_xlabel("CRYSTAL groups")
-    ax.set_ylabel("MACELES groups")
+    ax.set_xlabel("CRYSTAL Groups")
+    ax.set_ylabel("MACELES Groups")
     # ax.set_xlabel("HSEsol groups")
     ax.xaxis.set_label_coords(0.5, -0.15)
     # ax.set_ylabel("PBEsol groups")
@@ -598,7 +599,7 @@ def plot_combined_overlap_heatmaps(
     ax.text(
         0.03,
         0.95,
-        "b) Degenerate-group overlap",
+        "b) Degenerate-Group Overlap",
         transform=ax.transAxes,
         va="top",
         ha="left",

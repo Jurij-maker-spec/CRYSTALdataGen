@@ -182,9 +182,9 @@ def marker_for_seed(seed):
 
 def savefig(fig, outbase: Path):
     outbase.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(outbase.with_suffix(".png"), dpi=300, bbox_inches="tight")
+    # fig.savefig(outbase.with_suffix(".png"), dpi=300, bbox_inches="tight")
     fig.savefig(outbase.with_suffix(".pdf"), bbox_inches="tight")
-    print(f"saved: {outbase.with_suffix('.png')}")
+    # print(f"saved: {outbase.with_suffix('.png')}")
     print(f"saved: {outbase.with_suffix('.pdf')}")
 
 
@@ -561,8 +561,8 @@ def plot_landscape(
         bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
     )
 
-    ax_bottom.set_xlabel(r"Cutoff $r_\mathrm{max}$ in $\AA$")
-    fig.supylabel("Composite Score", size=22)
+    ax_bottom.set_xlabel(r"Cutoff $r_\mathrm{max}$ in $\AA$", size=20)
+    fig.supylabel("Composite Score", size=20)
 
     add_style_legends(
         fig,
@@ -774,7 +774,7 @@ def main():
         raise RuntimeError(f"No usable model rows found for {args.structure}")
 
     print(f"rows used: {len(rows)}")
-    args.outdir = args.outdir / f"{args.structure}"
+    args.outdir = args.outdir # / f"{args.structure}"
 
     if args.plot in {"all", "landscape"}:
         plot_landscape(rows, args.structure, args.outdir, top_fraction=args.top_fraction, label_pos=args.label_pos)

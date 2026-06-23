@@ -160,6 +160,7 @@ def plot_ir_spectrum_with_frequency_correlation(
     crystal_freqs_cm=None,
     crystal_db_path: str | Path = "/home/jha/jha/python_scripts/CRYSTALdataGen/data/ref_db.h5",
     outfile: str | Path = "ir_spectrum_frequency_correlation.pdf",
+    functional = None
 ):
     cmap = CMAP
     c = cmap([0.4, 0.7, 0.8])
@@ -224,9 +225,12 @@ def plot_ir_spectrum_with_frequency_correlation(
         nu_grid,
         ir_spec,
         lw = 1.5,
-        label=f"MACELES {structure}",
+        label=f"MACELES {functional if functional is not None else structure}",
         color=c[1],
     )
+    
+    # Add fillbetween here
+    ax0.fill_between(nu_grid, ir_spec, color=c[1], alpha=0.1)
     ax0.legend()
     plt.setp(ax0.get_xticklabels(), visible=False)
 
@@ -236,9 +240,9 @@ def plot_ir_spectrum_with_frequency_correlation(
     ax1.plot(
         nu_grid,
         ir_spec,
-        lw=1.2,
+        lw=1.4,
         ls="--",
-        label=f"MACELES {structure}",
+        label=f"MACELES",
         color=c[1],
     )
 
@@ -246,15 +250,16 @@ def plot_ir_spectrum_with_frequency_correlation(
         ax1.plot(
             x_ref,
             kde_ref,
-            lw = 1.5,
+            lw = 1.2,
             label="CRYSTAL",
             color=c[0],
         )
+        ax1.fill_between(x_ref, kde_ref, color=c[0], alpha=0.1)
 
     ax1.legend()
     ax1.set_xlabel(r"Wavenumber in cm$^{-1}$")
     
-    fig.supylabel("Relative IR intensity", x=0.074)
+    fig.supylabel("Relative IR Intensity", x=0.074)
     # ------------------------------------------------------------
     # Right axis: frequency-correlation scatter
     # ------------------------------------------------------------
@@ -282,7 +287,7 @@ def plot_ir_spectrum_with_frequency_correlation(
                 edgecolors=cmap([0.3]),
                 linewidths = 0.75,
                 color = c[2],
-                label=r"$\Gamma$-Mode correlation",
+                label=r"$\Gamma$-Mode Correlation",
             )
 
             f_min = min(np.min(x), np.min(y))
@@ -325,8 +330,8 @@ def plot_ir_spectrum_with_frequency_correlation(
         )
 
     ax_corr.legend()
-    ax_corr.set_xlabel("CRYSTAL modes in cm$^{-1}$")
-    ax_corr.set_ylabel("MACELES modes in cm$^{-1}$")
+    ax_corr.set_xlabel("CRYSTAL Modes in cm$^{-1}$")
+    ax_corr.set_ylabel("MACELES Modes in cm$^{-1}$")
     ticks = ax_corr.get_xticks()
     # print(ticks)
     ax_corr.set_yticks(ticks[1:-1])
