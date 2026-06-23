@@ -13,4 +13,3 @@ python plot_ref_db_sweep.py --structure Al2O3_PBE --outdir /home/jha/jha/python_
 python plot_ref_db_sweep.py --structure TiO2_rutil --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/TiO2 --plot landscape
 python plot_ref_db_sweep.py --structure TiO2_rutil_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/TiO2 --plot landscape
 
-# python general_plots.py top-n-ir --structure AlN --top-n 10 --selection spaced 
