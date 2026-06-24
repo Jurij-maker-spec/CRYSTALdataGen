@@ -160,7 +160,8 @@ def plot_ir_spectrum_with_frequency_correlation(
     crystal_freqs_cm=None,
     crystal_db_path: str | Path = "/home/jha/jha/python_scripts/CRYSTALdataGen/data/ref_db.h5",
     outfile: str | Path = "ir_spectrum_frequency_correlation.pdf",
-    functional = None
+    functional: None = None,
+    scale: float = 0.9
 ):
     cmap = CMAP
     c = cmap([0.4, 0.7, 0.8])
@@ -172,7 +173,7 @@ def plot_ir_spectrum_with_frequency_correlation(
     x_ref = None
     kde_ref = None
 
-    fig = plt.figure(figsize=(15, 5))
+    fig = plt.figure(figsize=(15*scale, 5*scale))
 
     gs = fig.add_gridspec(
         nrows=2,

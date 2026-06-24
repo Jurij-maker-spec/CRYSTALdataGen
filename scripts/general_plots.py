@@ -302,7 +302,7 @@ def _position_text(ax, score, true_rank, fs=18, offset=1.1, base_x=0.01):
         fontsize=fs,
     )
     ax.text(
-        base_x + 0.071,
+        base_x + 0.082,
         offset + 0.08,
         f"{true_rank},",
         transform=ax.get_yaxis_transform(),
@@ -311,7 +311,7 @@ def _position_text(ax, score, true_rank, fs=18, offset=1.1, base_x=0.01):
         fontsize=fs,
     )
     ax.text(
-        base_x + 0.085,
+        base_x + 0.097,
         offset + 0.08,
         "score:",
         transform=ax.get_yaxis_transform(),
@@ -320,7 +320,7 @@ def _position_text(ax, score, true_rank, fs=18, offset=1.1, base_x=0.01):
         fontsize=fs,
     )
     ax.text(
-        base_x + 0.171,
+        base_x + 0.192,
         offset + 0.08,
         f"{score:.1f}",
         transform=ax.get_yaxis_transform(),
@@ -427,6 +427,7 @@ def plot_top_N_of_a_structure(
     y_offset: float = 1.15,
     normalize_models: bool = True,
     reference_at_bottom: bool = True,
+    scale: float = 0.85
 ) -> None:
     """
     Plot selected cached model IR spectra for one structure.
@@ -529,7 +530,7 @@ def plot_top_N_of_a_structure(
     fig, ax = plt.subplots(
         1,
         1,
-        figsize=(14, fig_height),
+        figsize=(14*scale, fig_height*scale),
         constrained_layout=True,
     )
 

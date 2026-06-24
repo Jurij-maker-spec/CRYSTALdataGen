@@ -469,6 +469,7 @@ def plot_combined_overlap_heatmaps(
     freqs_test: np.ndarray,
     skip_first: int = 3,
     outfile: str | Path = "combined_overlap_heatmaps.png",
+    x_axis_label_offset: float = -0.19,
 ):
     """
     Plot mode-overlap and degenerate-group overlap heatmaps side-by-side.
@@ -513,7 +514,7 @@ def plot_combined_overlap_heatmaps(
     ax.set_xlabel(r"CRYSTAL Modes in cm$^{-1}$")
     ax.set_ylabel(r"MACELES Modes in cm$^{-1}$")
     # ax.set_xlabel(r"HSEsol modes in cm$^{-1}$")
-    ax.xaxis.set_label_coords(0.5, -0.15)
+    ax.xaxis.set_label_coords(0.5, x_axis_label_offset)
     # ax.set_ylabel(r"PBEsol modes in cm$^{-1}$")
 
 
@@ -591,7 +592,7 @@ def plot_combined_overlap_heatmaps(
     ax.set_xlabel("CRYSTAL Groups")
     ax.set_ylabel("MACELES Groups")
     # ax.set_xlabel("HSEsol groups")
-    ax.xaxis.set_label_coords(0.5, -0.15)
+    ax.xaxis.set_label_coords(0.5, x_axis_label_offset)
     # ax.set_ylabel("PBEsol groups")
 
 

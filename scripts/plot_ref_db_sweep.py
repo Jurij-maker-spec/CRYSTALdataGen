@@ -460,7 +460,11 @@ def plot_landscape(
         structure, 
         outdir, 
         top_fraction=0.10,
-        label_pos='top'
+        label_pos='top',
+        scale=0.9,
+        ls = 18,        # labelsize
+        ts = 14,         # textsize
+        #
         ):
     keys = ["r_max", "composite_score", "energy_weight", "forces_weight", "seed", "size"]
     rows = require_keys(rows, keys)
@@ -529,8 +533,8 @@ def plot_landscape(
 
     ax_top.spines["bottom"].set_visible(False)
     ax_bottom.spines["top"].set_visible(False)
-    ax_top.tick_params(labeltop=False, bottom=False)
-    ax_bottom.tick_params(top=False)
+    ax_top.tick_params(labeltop=False, bottom=False, labelsize=14)
+    ax_bottom.tick_params(top=False, labelsize=14)
     add_broken_axis_marks(ax_top, ax_bottom)
 
     ax_top.text(
@@ -540,16 +544,17 @@ def plot_landscape(
         transform=ax_top.transAxes,
         va="top",
         ha="left",
-        size=18,
+        size=ts,
         bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
     )
     if label_pos == 'top':
         posi = 0.95
     elif label_pos == 'bottom':
         posi = 0.05
-    else:
-        label_pos = 'center'
+    elif label_pos == 'center':
+        print('HERE')
         posi = 0.5
+        
     ax_bottom.text(
         0.05,
         posi,
@@ -557,12 +562,12 @@ def plot_landscape(
         transform=ax_bottom.transAxes,
         va=label_pos,
         ha="left",
-        size=15,
+        size=ts,
         bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
     )
 
-    ax_bottom.set_xlabel(r"Cutoff $r_\mathrm{max}$ in $\AA$", size=20)
-    fig.supylabel("Composite Score", size=20)
+    ax_bottom.set_xlabel(r"Cutoff $r_\mathrm{max}$ in $\AA$", size=ls)
+    fig.supylabel("Composite Score", size=ls, x=0.04)
 
     add_style_legends(
         fig,
