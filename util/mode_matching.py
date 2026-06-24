@@ -469,7 +469,6 @@ def plot_combined_overlap_heatmaps(
     freqs_test: np.ndarray,
     skip_first: int = 3,
     outfile: str | Path = "combined_overlap_heatmaps.png",
-    functional = None
 ):
     """
     Plot mode-overlap and degenerate-group overlap heatmaps side-by-side.

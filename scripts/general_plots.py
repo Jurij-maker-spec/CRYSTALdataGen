@@ -17,13 +17,19 @@ from util.ref_db import (
     read_crystal_ir_reference,
     read_crystal_modes,
     read_model_evaluation,
+    read_mode_overlap,
     list_model_evaluations_for_structure,
     format_hyperparams,
 )
-from util.plotting import restore_degeneracies, perform_KDE
+from util.plotting import (
+    restore_degeneracies,
+    plot_ir_spectrum_with_frequency_correlation,
+    perform_KDE,
+)
 from util.mode_matching import (
     compare_mode_sets,
-    _slice_CMAP
+    plot_combined_overlap_heatmaps,
+    _slice_CMAP,
 )
 
 DEFAULT_REF_DB = PROJECT_ROOT / "data" / "ref_db.h5"
@@ -49,6 +55,10 @@ FUNCTIONAL = {
 }
 
 CMAP = mpl.colormaps["managua"]
+
+###########################################################################
+# HELPERS
+###########################################################################
 
 
 def _normalize_spectrum(y: np.ndarray) -> np.ndarray:
@@ -318,6 +328,11 @@ def _position_text(ax, score, true_rank, fs=18, offset=1.1, base_x=0.01):
         va="bottom",
         fontsize=fs,
     )
+
+
+###########################################################################
+# PLOTTERS
+###########################################################################
 
 
 def plot_hse_pbe_ir_grid(
@@ -691,115 +706,39 @@ def plot_best_model_result_figures_for_structure(
     style_path: Path | None = DEFAULT_STYLE,
     normalize_ir: bool = True,
     skip_first: int = 3,
-    degeneracy_tol: float = 0.5,
+    degeneracy_tol: float = 0.5,  # kept for CLI compatibility; not used with cached overlap
     skip_missing: bool = True,
 ) -> dict[str, dict]:
     """
-    Plot best-model result figures for one structure, optionally for both
-    HSEsol and PBEsol variants.
+    Plot thesis/result figures for the best cached model of a structure.
 
-    For each selected structure, this creates:
+    For each selected structure, this writes:
 
         <structure>_ir_corr_comp.pdf
         <structure>_mode_overlap_combined.pdf
 
-    and saves them into a pooled per-base-structure directory, e.g.
-
-        /home/jha/jha/python_scripts/master_thesis/figures/results/AlN/
-
-    Parameters
-    ----------
-    ref_db
-        Path to ref_db.h5.
-
-    structure
-        Structure name, e.g. "AlN", "AlN_PBE", "SiO2", "TiO2_rutil".
-
-    outdir_root
-        Root output directory. The function creates one subdirectory per
-        base structure.
-
-    metric
-        Ranking metric. Lower is assumed to be better, consistent with
-        list_model_evaluations_for_structure(..., sort=True).
-
-    include_functional_pair
-        If True and `structure` belongs to STRUCTURE_PAIRS, plot both
-        HSEsol and PBEsol variants into the same base-structure directory.
-
-    hparam_filters
-        Optional filters, same logic as plot_top_N_of_a_structure(), e.g.
-        {"r_max": 4.0, "forces_weight": 75}.
-
-    style_path
-        Matplotlib style file.
-
-    normalize_ir
-        Normalize the cached model IR spectrum before plotting.
-
-    skip_first
-        Number of acoustic modes to skip in mode-overlap plots.
-
-    degeneracy_tol
-        Frequency tolerance in cm^-1 for degenerate-group mode matching.
-
-    skip_missing
-        If True, missing PBE/HSEsol variants are skipped with a warning.
-        If False, missing data raises an error.
-
-    Returns
-    -------
-    written
-        Dict keyed by plotted structure, containing selected run metadata
-        and output paths.
+    The mode-overlap plot uses cached mode_matching data from ref_db.
     """
-    from util.plotting import plot_ir_spectrum_with_frequency_correlation
-    from util.mode_matching import plot_combined_overlap_heatmaps
-
     apply_style(style_path)
 
     ref_db = Path(ref_db)
     outdir_root = Path(outdir_root)
 
-    def _resolve_structure_family(structure_name: str):
-        """
-        Return base structure and list of structures to plot.
+    # ------------------------------------------------------------
+    # Resolve HSEsol/PBEsol pair.
+    # ------------------------------------------------------------
+    base_structure = structure
+    structures_to_plot = [structure]
 
-        Example
-        -------
-        structure_name="AlN"     -> ("AlN", ["AlN", "AlN_PBE"])
-        structure_name="AlN_PBE" -> ("AlN", ["AlN", "AlN_PBE"])
-        """
-        for hse_name, pbe_name, _label in STRUCTURE_PAIRS:
-            if structure_name in {hse_name, pbe_name}:
-                if include_functional_pair:
-                    return hse_name, [hse_name, pbe_name]
-                return hse_name, [structure_name]
+    for hse_name, pbe_name, _label in STRUCTURE_PAIRS:
+        if structure in {hse_name, pbe_name}:
+            base_structure = hse_name
+            structures_to_plot = [hse_name, pbe_name] if include_functional_pair else [structure]
+            break
+    else:
+        if structure.endswith("_PBE"):
+            base_structure = structure[:-4]
 
-        # Fallback for structures not listed in STRUCTURE_PAIRS.
-        if structure_name.endswith("_PBE"):
-            base_name = structure_name[:-4]
-        else:
-            base_name = structure_name
-
-        return base_name, [structure_name]
-
-    def _first_existing(mapping: dict, keys: list[str], *, required: bool = True):
-        for key in keys:
-            if key in mapping:
-                value = mapping[key]
-                if value is not None:
-                    return value
-
-        if required:
-            raise KeyError(
-                "None of the expected keys were found. "
-                f"Tried: {keys}. Available keys: {sorted(mapping.keys())}"
-            )
-
-        return None
-
-    base_structure, structures_to_plot = _resolve_structure_family(structure)
     outdir = outdir_root / base_structure
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -807,7 +746,7 @@ def plot_best_model_result_figures_for_structure(
 
     for struct in structures_to_plot:
         # --------------------------------------------------------
-        # Rank cached model evaluations and select the best one.
+        # Select best cached model.
         # --------------------------------------------------------
         rows_all = list_model_evaluations_for_structure(
             ref_db,
@@ -843,6 +782,10 @@ def plot_best_model_result_figures_for_structure(
         best = rows[0]
         best_rank = rows_all.index(best) + 1
 
+        # --------------------------------------------------------
+        # Read exact cached model data from ref_db.
+        # Keys are defined by util.ref_db.read_model_evaluation().
+        # --------------------------------------------------------
         ev = read_model_evaluation(
             ref_db,
             struct,
@@ -851,65 +794,22 @@ def plot_best_model_result_figures_for_structure(
             sweep_id=best["sweep_id"],
         )
 
-        # --------------------------------------------------------
-        # Required cached model arrays.
-        # --------------------------------------------------------
-        freqs_model = np.asarray(
-            _first_existing(
-                ev,
-                ["freqs_cm", "frequencies_cm", "frequencies_cm1"],
-            ),
-            dtype=float,
-        )
-
-        eigvecs_model = np.asarray(
-            _first_existing(
-                ev,
-                ["eigvecs_mw", "eigenvectors_mw", "modes_mw"],
-            ),
-            dtype=float,
-        )
-
-        nu_grid = np.asarray(
-            _first_existing(
-                ev,
-                ["nu_grid_cm1", "nu_grid", "wavenumber_grid_cm1"],
-            ),
-            dtype=float,
-        )
-
-        ir_spec = np.asarray(
-            _first_existing(
-                ev,
-                ["ir_spec", "ir_spectrum", "spectrum"],
-            ),
-            dtype=float,
-        )
-
-        intensities = _first_existing(
-            ev,
-            ["intensities", "ir_intensities", "intensities_km_mol"],
-            required=False,
-        )
-        if intensities is None:
-            intensities = np.zeros_like(freqs_model)
-        intensities = np.asarray(intensities, dtype=float)
+        freqs_model = np.asarray(ev["frequencies_cm1"], dtype=float)
+        intensities = np.asarray(ev["intensities"], dtype=float)
+        nu_grid = np.asarray(ev["nu_grid_cm1"], dtype=float)
+        ir_spec = np.asarray(ev["ir_spec"], dtype=float)
 
         if normalize_ir:
             ir_spec = _normalize_spectrum(ir_spec)
 
         # --------------------------------------------------------
-        # Read CRYSTAL reference modes once. Used for both plots:
-        # frequency correlation and mode-overlap.
+        # Read CRYSTAL reference modes once.
         # --------------------------------------------------------
         crystal_modes = read_crystal_modes(ref_db, struct)
         freqs_crys = np.asarray(crystal_modes["freqs_cm"], dtype=float)
-        eigvecs_crys = np.asarray(crystal_modes["eigvecs_mw"], dtype=float)
 
         # --------------------------------------------------------
-        # 1) IR spectrum + frequency-correlation plot.
-        # Passing a .png path creates both .png and .pdf in your
-        # current util.plotting implementation.
+        # 1) IR spectrum + frequency correlation.
         # --------------------------------------------------------
         ir_out_png = outdir / f"{struct}_ir_corr_comp.png"
 
@@ -922,43 +822,34 @@ def plot_best_model_result_figures_for_structure(
             crystal_freqs_cm=freqs_crys,
             crystal_db_path=ref_db,
             outfile=ir_out_png,
-            functional = FUNCTIONAL[struct]
+            functional=FUNCTIONAL[struct],
         )
 
         ir_out_pdf = ir_out_png.with_suffix(".pdf")
 
         # --------------------------------------------------------
-        # 2) Combined mode-overlap plot.
-        # We call compare_mode_sets without heatmap_outfile to avoid
-        # writing the separate single/group heatmaps, then write only
-        # the combined figure.
+        # 2) Cached mode-overlap plot.
+        # This reads the mode_matching group from ref_db.
+        # No mode matching is recomputed here.
         # --------------------------------------------------------
-        mace_modes = {
-            "freqs_cm": freqs_model,
-            "eigvecs_mw": eigvecs_model,
-        }
-
-        mode_result = compare_mode_sets(
-            freqs_crys=freqs_crys,
-            evecs_crys=eigvecs_crys,
-            mace_modes=mace_modes,
-            skip_first=skip_first,
-            degeneracy_tol=degeneracy_tol,
-            heatmap_outfile=None,
-            title=f"{struct}: CRYSTAL vs MACELES mode overlap",
+        mode_data = read_mode_overlap(
+            ref_db,
+            structure=struct,
+            run_id=best["run_id"],
+            dataset_split=best["dataset_split"],
+            sweep_id=best["sweep_id"],
         )
 
         mode_out_png = outdir / f"{struct}_mode_overlap_combined.png"
 
         plot_combined_overlap_heatmaps(
-            overlap_matrix=mode_result["overlap_cut"],
-            group_overlap_matrix=mode_result["group_overlap_matrix"],
-            group_matches=mode_result["subgroups"],
+            overlap_matrix=mode_data["overlap_cut"],
+            group_overlap_matrix=mode_data["group_overlap_matrix"],
+            group_matches=mode_data["group_matches"],
             freqs_ref=freqs_crys,
             freqs_test=freqs_model,
             skip_first=skip_first,
             outfile=mode_out_png,
-            functional = FUNCTIONAL[struct]
         )
 
         mode_out_pdf = mode_out_png.with_suffix(".pdf")
@@ -1001,7 +892,6 @@ def plot_best_model_result_figures_for_structure(
         )
 
     return written
-
 
 def plot_hse_pbe_phonon_grid(
     *,
@@ -1173,6 +1063,11 @@ def plot_modes(
     pdf = outdir / f"{outfile_stem}.pdf"
     fig.savefig(png, dpi=200, bbox_inches="tight")
     fig.savefig(pdf, bbox_inches="tight")
+
+
+###########################################################################
+# MAIN
+###########################################################################
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
