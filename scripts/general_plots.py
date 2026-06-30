@@ -18,6 +18,8 @@ from util.ref_db import (
     read_crystal_modes,
     read_model_evaluation,
     read_mode_overlap,
+    read_mode_matches,
+    read_ir_peak_matches,
     list_model_evaluations_for_structure,
     format_hyperparams,
 )
@@ -45,7 +47,7 @@ STRUCTURE_PAIRS = [
 
 FUNCTIONAL = {
     'SiO2': r'SiO$_2$ HSEsol',
-    'SiO2_PBE': r'SiO$2$ PBEsol',
+    'SiO2_PBE': r'SiO$_2$ PBEsol',
     'TiO2_rutil': r'TiO$_2$ HSEsol',
     'TiO2_rutil_PBE': r'TiO$_2$ PBEsol',
     'Al2O3': r'Al$_2$O$_3$ HSEsol',
@@ -275,7 +277,6 @@ def read_reference_spectrum(ref_db: Path, structure: str, fwhm: float):
     return x, kde
 
 
-
 def _short_run_label(run_id: str, max_len: int = 44) -> str:
     """
     Keep long run names readable in stacked plots.
@@ -328,6 +329,401 @@ def _position_text(ax, score, true_rank, fs=18, offset=1.1, base_x=0.01):
         va="bottom",
         fontsize=fs,
     )
+
+
+def _reference_ir_intensity_at_mode_frequency(
+    *,
+    ref_db: Path,
+    structure: str,
+    ref_freqs_cm1: np.ndarray,
+    tolerance_cm1: float = 2.0,
+) -> np.ndarray:
+    """
+    Map full reference-mode frequencies to normalized CRYSTAL IR intensities.
+
+    For all-mode plots, many modes are IR-inactive. Those receive intensity 0.
+    Matching is frequency-based because the stored CRYSTAL IR reference is
+    stored as IR frequencies + intensities, not necessarily as full 3N mode
+    intensity array.
+    """
+    ref_freqs_cm1 = np.asarray(ref_freqs_cm1, dtype=float)
+
+    out = np.zeros_like(ref_freqs_cm1, dtype=float)
+
+    try:
+        ir_freqs, ir_intensities = read_crystal_ir_reference(ref_db, structure)
+        ir_freqs, ir_intensities, _ = restore_degeneracies(ir_freqs, ir_intensities)
+
+        ir_freqs = np.asarray(ir_freqs, dtype=float)
+        ir_intensities = np.asarray(ir_intensities, dtype=float)
+
+        mask = ir_freqs > 1e-6
+        ir_freqs = ir_freqs[mask]
+        ir_intensities = ir_intensities[mask]
+
+        if ir_freqs.size == 0:
+            return out
+
+        imax = np.nanmax(ir_intensities)
+        if np.isfinite(imax) and imax > 0.0:
+            ir_intensities = ir_intensities / imax
+
+        for i, f in enumerate(ref_freqs_cm1):
+            j = int(np.argmin(np.abs(ir_freqs - f)))
+            if abs(ir_freqs[j] - f) <= tolerance_cm1:
+                out[i] = ir_intensities[j]
+
+    except Exception:
+        pass
+
+    return out
+
+
+def _marker_sizes_from_intensity(
+    intensity_rel: np.ndarray,
+    *,
+    min_size: float = 10.0,
+    max_size: float = 140.0,
+) -> np.ndarray:
+    intensity_rel = np.asarray(intensity_rel, dtype=float)
+    intensity_rel = np.nan_to_num(intensity_rel, nan=0.0, posinf=0.0, neginf=0.0)
+    intensity_rel = np.clip(intensity_rel, 0.0, None)
+
+    imax = np.nanmax(intensity_rel) if intensity_rel.size else 0.0
+    if imax > 0.0:
+        intensity_rel = intensity_rel / imax
+
+    # sqrt scaling keeps weak IR modes visible without making strong modes huge.
+    return min_size + (max_size - min_size) * np.sqrt(intensity_rel)
+
+
+def _normalize_positive(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+
+    if values.size == 0:
+        return values
+
+    vmax = np.nanmax(values)
+    if not np.isfinite(vmax) or vmax <= 0.0:
+        return values
+
+    return values / vmax
+
+
+def _collect_frequency_evolution_points(
+    *,
+    ref_db: Path,
+    structure: str,
+    rows_all: list[dict],
+    selected_rows: list[dict],
+    rows_filtered: list[dict],
+    metric: str,
+    modes: str,
+    y_axis: str,
+    color_by: str,
+    skip_first: int,
+    ir_intensity_tolerance_cm1: float,
+) -> dict[str, np.ndarray]:
+    """
+    Convert selected model rows into scatter-plot arrays.
+    """
+    xs = []
+    ys = []
+    cs = []
+    ss_intensity = []
+    ref_freqs_all = []
+    ref_mode_indices_all = []
+
+    for row in selected_rows:
+        global_rank = rows_all.index(row) + 1
+        filtered_rank = rows_filtered.index(row) + 1
+        n_total = len(rows_all)
+
+        if y_axis == "rank":
+            y_value = float(global_rank)
+        elif y_axis == "filtered_rank":
+            y_value = float(filtered_rank)
+        elif y_axis == "rank_percentile":
+            if n_total <= 1:
+                y_value = 0.0
+            else:
+                y_value = 100.0 * (global_rank - 1) / (n_total - 1)
+        elif y_axis == "metric":
+            y_value = float(row["metric_value"])
+        else:
+            raise ValueError(
+                f"Unknown y_axis={y_axis}. "
+                "Use rank, filtered_rank, rank_percentile, or metric."
+            )
+
+        if modes == "matched_modes":
+            matches = read_mode_matches(
+                ref_db,
+                structure=structure,
+                run_id=row["run_id"],
+                dataset_split=row["dataset_split"],
+                sweep_id=row["sweep_id"],
+            )
+
+            ref_idx = np.asarray(matches["ref_mode_index"], dtype=int)
+            ref_freq = np.asarray(matches["ref_freq_cm1"], dtype=float)
+            model_freq = np.asarray(matches["model_freq_cm1"], dtype=float)
+            abs_delta = np.asarray(matches["abs_delta_cm1"], dtype=float)
+            overlap = np.asarray(matches["overlap"], dtype=float)
+
+            mask = (
+                (ref_idx >= skip_first)
+                & np.isfinite(ref_freq)
+                & np.isfinite(model_freq)
+                & (ref_freq > 1e-6)
+                & (model_freq > 1e-6)
+            )
+
+            ref_idx = ref_idx[mask]
+            ref_freq = ref_freq[mask]
+            model_freq = model_freq[mask]
+            abs_delta = abs_delta[mask]
+            overlap = overlap[mask]
+
+            ref_intensity = _reference_ir_intensity_at_mode_frequency(
+                ref_db=ref_db,
+                structure=structure,
+                ref_freqs_cm1=ref_freq,
+                tolerance_cm1=ir_intensity_tolerance_cm1,
+            )
+
+            if color_by == "abs_delta_cm1":
+                color_values = abs_delta
+            elif color_by == "one_minus_overlap":
+                color_values = 1.0 - overlap
+            elif color_by == "overlap":
+                color_values = overlap
+            else:
+                raise ValueError(
+                    f"color_by={color_by} is not available for modes='matched_modes'. "
+                    "Use abs_delta_cm1, one_minus_overlap, or overlap."
+                )
+
+        elif modes == "ir_active":
+            matches = read_ir_peak_matches(
+                ref_db,
+                structure=structure,
+                run_id=row["run_id"],
+                dataset_split=row["dataset_split"],
+                sweep_id=row["sweep_id"],
+            )
+
+            ref_freq = np.asarray(matches["ref_freq_cm1"], dtype=float)
+            model_freq = np.asarray(matches["model_freq_cm1"], dtype=float)
+            abs_delta = np.asarray(matches["abs_delta_cm1"], dtype=float)
+
+            mask = (
+                np.isfinite(ref_freq)
+                & np.isfinite(model_freq)
+                & (ref_freq > 1e-6)
+                & (model_freq > 1e-6)
+            )
+
+            ref_freq = ref_freq[mask]
+            model_freq = model_freq[mask]
+            abs_delta = abs_delta[mask]
+
+            if "ref_intensity" in matches:
+                ref_intensity = np.asarray(matches["ref_intensity"], dtype=float)[mask]
+                ref_intensity = _normalize_positive(ref_intensity)
+            else:
+                ref_intensity = np.ones_like(ref_freq)
+
+            if color_by == "abs_delta_cm1":
+                color_values = abs_delta
+
+            elif color_by == "intensity_abs_error":
+                if "ref_intensity" not in matches or "model_intensity" not in matches:
+                    raise KeyError(
+                        "color_by='intensity_abs_error' requires ref_intensity "
+                        "and model_intensity in ir_matching/matched_peaks."
+                    )
+
+                ref_i = np.asarray(matches["ref_intensity"], dtype=float)[mask]
+                mod_i = np.asarray(matches["model_intensity"], dtype=float)[mask]
+
+                ref_i = _normalize_positive(ref_i)
+                mod_i = _normalize_positive(mod_i)
+
+                color_values = np.abs(mod_i - ref_i)
+
+            else:
+                raise ValueError(
+                    f"color_by={color_by} is not available for modes='ir_active'. "
+                    "Use abs_delta_cm1 or intensity_abs_error."
+                )
+
+            # No true full-mode index exists in the IR matching table.
+            ref_idx = np.arange(len(ref_freq), dtype=int)
+
+        else:
+            raise ValueError("modes must be 'matched_modes' or 'ir_active'.")
+
+        n = len(model_freq)
+
+        xs.append(model_freq)
+        ys.append(np.full(n, y_value, dtype=float))
+        cs.append(color_values)
+        ss_intensity.append(ref_intensity)
+        ref_freqs_all.append(ref_freq)
+        ref_mode_indices_all.append(ref_idx)
+
+    if not xs:
+        return {
+            "x": np.array([]),
+            "y": np.array([]),
+            "c": np.array([]),
+            "intensity": np.array([]),
+            "ref_freq": np.array([]),
+            "ref_mode_index": np.array([]),
+        }
+
+    return {
+        "x": np.concatenate(xs),
+        "y": np.concatenate(ys),
+        "c": np.concatenate(cs),
+        "intensity": np.concatenate(ss_intensity),
+        "ref_freq": np.concatenate(ref_freqs_all),
+        "ref_mode_index": np.concatenate(ref_mode_indices_all),
+    }
+
+
+def _reference_lines_for_frequency_evolution(
+    *,
+    ref_db: Path,
+    structure: str,
+    modes: str,
+    skip_first: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return reference-line frequencies and normalized reference IR intensities.
+
+    The second array can be used to vary alpha/linewidth later.
+    """
+    if modes == "ir_active":
+        freqs, intensities = read_crystal_ir_reference(ref_db, structure)
+        freqs, intensities, _ = restore_degeneracies(freqs, intensities)
+
+        freqs = np.asarray(freqs, dtype=float)
+        intensities = np.asarray(intensities, dtype=float)
+
+        mask = freqs > 1e-6
+        freqs = freqs[mask]
+        intensities = intensities[mask]
+
+        intensities = _normalize_positive(intensities)
+        return freqs, intensities
+
+    if modes == "matched_modes":
+        modes_ref = read_crystal_modes(ref_db, structure)
+        freqs = np.asarray(modes_ref["freqs_cm"], dtype=float)
+
+        if skip_first > 0:
+            freqs = freqs[skip_first:]
+
+        freqs = freqs[freqs > 1e-6]
+
+        intensities = _reference_ir_intensity_at_mode_frequency(
+            ref_db=ref_db,
+            structure=structure,
+            ref_freqs_cm1=freqs,
+        )
+
+        return freqs, intensities
+
+    raise ValueError("modes must be 'matched_modes' or 'ir_active'.")
+
+
+def _draw_reference_frequency_lines(
+    ax,
+    *,
+    ref_freqs: np.ndarray,
+    ref_intensities: np.ndarray,
+    color: str = "black",
+) -> None:
+    ref_freqs = np.asarray(ref_freqs, dtype=float)
+    ref_intensities = np.asarray(ref_intensities, dtype=float)
+
+    for f, inten in zip(ref_freqs, ref_intensities):
+        # IR-active modes get slightly stronger guide lines.
+        alpha = 0.12 + 0.28 * float(np.clip(inten, 0.0, 1.0))
+        lw = 0.5 + 0.8 * float(np.clip(inten, 0.0, 1.0))
+
+        ax.axvline(
+            f,
+            ls="--",
+            lw=lw,
+            color=color,
+            alpha=alpha,
+            zorder=0,
+        )
+
+
+def _draw_frequency_error_bands(
+    ax,
+    *,
+    points: dict[str, np.ndarray],
+    max_width_cm1: float = 60.0,
+    min_width_cm1: float = 0.0,
+) -> None:
+    """
+    Draw a light band around each reference frequency.
+
+    Band half-width = median |model_freq - ref_freq| across selected models,
+    grouped by the rounded reference frequency.
+    """
+    ref_freq = np.asarray(points["ref_freq"], dtype=float)
+    x = np.asarray(points["x"], dtype=float)
+
+    if ref_freq.size == 0:
+        return
+
+    rounded = np.round(ref_freq, decimals=4)
+
+    for rf in np.unique(rounded):
+        mask = rounded == rf
+        if not np.any(mask):
+            continue
+
+        deltas = np.abs(x[mask] - ref_freq[mask])
+        width = float(np.nanmedian(deltas))
+
+        if not np.isfinite(width):
+            continue
+
+        width = np.clip(width, min_width_cm1, max_width_cm1)
+
+        if width <= 0.0:
+            continue
+
+        ax.axvspan(
+            float(rf) - width,
+            float(rf) + width,
+            alpha=0.1,
+            color="black",
+            lw=0.0,
+            zorder=0,
+        )
+
+
+def _resolve_structure_pair(structure_base: str) -> tuple[str, str, str]:
+    """
+    Resolve HSEsol/PBEsol pair from STRUCTURE_PAIRS.
+    """
+    for hse_name, pbe_name, label in STRUCTURE_PAIRS:
+        if structure_base in {hse_name, pbe_name}:
+            return hse_name, pbe_name, label
+
+    if structure_base.endswith("_PBE"):
+        return structure_base[:-4], structure_base, structure_base[:-4]
+
+    return structure_base, f"{structure_base}_PBE", structure_base
+
 
 
 ###########################################################################
@@ -894,6 +1290,7 @@ def plot_best_model_result_figures_for_structure(
 
     return written
 
+
 def plot_hse_pbe_phonon_grid(
     *,
     ref_db: Path,
@@ -908,7 +1305,7 @@ def plot_hse_pbe_phonon_grid(
     fig, axes = plt.subplots(
         2,
         2,
-        figsize=(9, 9),
+        figsize=(10, 10),
         # sharey=True,
         # sharex=True,
         constrained_layout=True,
@@ -922,7 +1319,7 @@ def plot_hse_pbe_phonon_grid(
         ax.scatter(
             hse_modes,
             pbe_modes,
-            s=160,
+            s=180,
             marker='d',
             alpha=0.66,
             edgecolors=CMAP([0.3]),
@@ -957,6 +1354,7 @@ def plot_hse_pbe_phonon_grid(
         ax.set_ylim(f_min, f_max)
         ax.set_aspect("equal", adjustable="box")
         # ax.legend()
+        i += 1
 
     fig.supylabel(r'PBEsol Modes in cm$^{-1}$')
     fig.supxlabel(r'HSEsol Modes in cm$^{-1}$')
@@ -1064,6 +1462,367 @@ def plot_modes(
     pdf = outdir / f"{outfile_stem}.pdf"
     fig.savefig(png, dpi=200, bbox_inches="tight")
     fig.savefig(pdf, bbox_inches="tight")
+
+
+def plot_phonon_frequency_evolution_pair(
+    *,
+    ref_db: Path,
+    structure_base: str,
+    outdir: Path,
+    outfile_stem: str | None = None,
+    metric: str = "composite_score",
+    selection: str = "spaced",
+    top_n: int | None = None,
+    modes: str = "matched_modes",
+    y_axis: str = "rank_percentile",
+    color_by: str = "abs_delta_cm1",
+    hparam_filters: dict[str, object] | None = None,
+    skip_first: int = 3,
+    ir_intensity_tolerance_cm1: float = 2.0,
+    show_error_bands: bool = True,
+    color_percentile: float = 98.0,
+    style_path: Path | None = None,
+    scale: float = 1.0,
+) -> None:
+    """
+    Plot model-frequency evolution against model quality for HSEsol/PBEsol.
+
+    Main use:
+        x-axis  : model-predicted matched frequency
+        y-axis  : rank percentile, rank, filtered rank, or metric
+        vlines  : CRYSTAL reference frequencies
+        color   : |Δν|, 1-overlap, overlap, or intensity error
+        size    : normalized reference IR intensity
+
+    modes
+    -----
+    matched_modes:
+        Uses mode_matching/mode_matches.
+        Valid color_by:
+            abs_delta_cm1
+            one_minus_overlap
+            overlap
+
+    ir_active:
+        Uses ir_matching/matched_peaks.
+        Valid color_by:
+            abs_delta_cm1
+            intensity_abs_error
+    """
+    apply_style(style_path)
+
+    ref_db = Path(ref_db)
+    outdir = Path(outdir)
+
+    if selection not in {"top", "spaced"}:
+        raise ValueError("selection must be 'top' or 'spaced'.")
+
+    if modes not in {"matched_modes", "ir_active"}:
+        raise ValueError("modes must be 'matched_modes' or 'ir_active'.")
+
+    hse_name, pbe_name, structure_label = _resolve_structure_pair(structure_base)
+    structures = [hse_name, pbe_name]
+
+    panel_data = []
+    selected_info = []
+
+    for struct in structures:
+        rows_all = list_model_evaluations_for_structure(
+            ref_db,
+            struct,
+            metric=metric,
+            require_ir_spectrum=True,
+            require_metric=True,
+            sort=True,
+        )
+
+        if not rows_all:
+            raise ValueError(
+                f"No cached model evaluations with metric={metric} found for {struct}."
+            )
+
+        rows = _filter_rows_by_hyperparams(rows_all, hparam_filters)
+
+        if not rows:
+            raise ValueError(
+                f"No rows left after filtering for {struct}. Filters: {hparam_filters}"
+            )
+
+        if top_n is None:
+            selected = rows
+
+        elif top_n < 1:
+            raise ValueError("top_n must be >= 1 when provided.")
+
+        elif top_n >= len(rows):
+            selected = rows
+
+        elif selection == "top":
+            selected = rows[:top_n]
+
+        elif selection == "spaced":
+            selected = _select_rank_spaced(rows, top_n)
+
+        else:
+            raise ValueError(
+                f"Unknown selection mode: {selection}. "
+                "Use 'top' or 'spaced'."
+            )
+
+        points = _collect_frequency_evolution_points(
+            ref_db=ref_db,
+            structure=struct,
+            rows_all=rows_all,
+            selected_rows=selected,
+            rows_filtered=rows,
+            metric=metric,
+            modes=modes,
+            y_axis=y_axis,
+            color_by=color_by,
+            skip_first=skip_first,
+            ir_intensity_tolerance_cm1=ir_intensity_tolerance_cm1,
+        )
+
+        ref_lines, ref_line_intensities = _reference_lines_for_frequency_evolution(
+            ref_db=ref_db,
+            structure=struct,
+            modes=modes,
+            skip_first=skip_first,
+        )
+
+        panel_data.append({
+            "structure": struct,
+            "rows_all": rows_all,
+            "rows_filtered": rows,
+            "selected": selected,
+            "points": points,
+            "ref_lines": ref_lines,
+            "ref_line_intensities": ref_line_intensities,
+        })
+
+        selected_info.append((struct, rows_all, rows, selected))
+
+    # Shared color scale.
+    all_c = np.concatenate([
+        p["points"]["c"]
+        for p in panel_data
+        if p["points"]["c"].size
+    ])
+
+    if all_c.size == 0:
+        raise ValueError("No points collected. Check cached matching data.")
+
+    cmin = float(np.nanmin(all_c))
+    cmax = float(np.nanpercentile(all_c, color_percentile))
+
+    if not np.isfinite(cmin):
+        cmin = 0.0
+
+    if not np.isfinite(cmax) or cmax <= cmin:
+        cmax = float(np.nanmax(all_c))
+
+    if not np.isfinite(cmax) or cmax <= cmin:
+        cmax = cmin + 1.0
+
+    norm = mpl.colors.Normalize(vmin=cmin, vmax=cmax, clip=True)
+
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(15.0 * scale, 6.2 * scale),
+        sharey=True,
+        constrained_layout=True,
+    )
+
+    last_scatter = None
+
+    for ax, pdata, functional_label in zip(axes, panel_data, ["HSEsol", "PBEsol"]):
+        points = pdata["points"]
+
+        _draw_reference_frequency_lines(
+            ax,
+            ref_freqs=pdata["ref_lines"],
+            ref_intensities=pdata["ref_line_intensities"],
+        )
+
+        if show_error_bands:
+            _draw_frequency_error_bands(
+                ax,
+                points=points,
+            )
+
+        sizes = _marker_sizes_from_intensity(points["intensity"])
+
+        last_scatter = ax.scatter(
+            points["x"],
+            points["y"],
+            c=points["c"],
+            s=sizes,
+            cmap=CMAP,
+            norm=norm,
+            marker="o",
+            alpha=0.72,
+            edgecolors="black",
+            linewidths=0.25,
+            zorder=2,
+        )
+
+        title = f"{structure_label} {functional_label}"
+        if pdata["structure"] in FUNCTIONAL:
+            title = FUNCTIONAL[pdata["structure"]]
+
+        ax.text(
+            0.03,
+            1.02,
+            title,
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=14,
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.85),
+        )
+
+        # x-limits from reference and model frequencies.
+        x_candidates = []
+        if pdata["ref_lines"].size:
+            x_candidates.append(pdata["ref_lines"])
+        if points["x"].size:
+            x_candidates.append(points["x"])
+
+        if x_candidates:
+            xx = np.concatenate(x_candidates)
+            xx = xx[np.isfinite(xx)]
+            if xx.size:
+                xmin = float(np.min(xx))
+                xmax = float(np.max(xx))
+                pad = 0.05 * (xmax - xmin) if xmax > xmin else 20.0
+                ax.set_xlim(max(0.0, xmin - pad), xmax + pad)
+
+        
+        ax.margins(x=0.01)
+
+    fig.supxlabel(r"Matched model frequency in cm$^{-1}$")
+
+    if y_axis == "rank_percentile":
+        axes[0].set_ylabel("Model rank percentile, 0 = best")
+    elif y_axis == "rank":
+        axes[0].set_ylabel("Global model rank, 1 = best")
+    elif y_axis == "filtered_rank":
+        axes[0].set_ylabel("Filtered model rank, 1 = best")
+    elif y_axis == "metric":
+        axes[0].set_ylabel(metric)
+
+    if color_by == "abs_delta_cm1":
+        cbar_label = r"$|\Delta \nu|$ in cm$^{-1}$"
+    elif color_by == "one_minus_overlap":
+        cbar_label = r"$1 -$ mode overlap"
+    elif color_by == "overlap":
+        cbar_label = "Mode overlap"
+    elif color_by == "intensity_abs_error":
+        cbar_label = "Abs. norm. intensity error"
+    else:
+        cbar_label = color_by
+
+    cbar = fig.colorbar(
+        last_scatter, 
+        ax=axes, 
+        pad = 0.015,
+        anchor=(0.0, 0.0),
+        shrink=0.775,
+        )
+    cbar.set_label(cbar_label)
+
+    # Size legend for reference intensity.
+    handles = []
+    labels = []
+    legend_values = np.array([0.0, 0.1, 1.0])
+    legend_sizes = _marker_sizes_from_intensity(legend_values)
+
+    for size, label in zip(
+        legend_sizes,
+        ["IR inactive/weak", "medium IR", "strong IR"],
+    ):
+        handles.append(
+            axes[1].scatter(
+                [],
+                [],
+                s=size,
+                facecolors="none",
+                edgecolors="black",
+                linewidths=0.6,
+            )
+        )
+        labels.append(label)
+
+    fig.legend(
+        handles,
+        labels,
+        title="Reference intensity",
+        loc="upper left",
+        frameon=True,
+        framealpha=0.9,
+        fontsize=11,
+        title_fontsize=12,
+        bbox_to_anchor=(0.92, 0.9625)
+    )
+
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    if outfile_stem is None:
+        filter_suffix = ""
+        if hparam_filters:
+            filter_suffix = "_" + "_".join(
+                f"{k}-{v}" for k, v in hparam_filters.items()
+            )
+            filter_suffix = filter_suffix.replace("/", "_")
+
+        n_label = "all" if top_n is None else str(top_n)
+        outfile_stem = (
+            f"{structure_base}_{modes}_{selection}_{top_n}_"
+            f"{metric}_{y_axis}_{color_by}{filter_suffix}_frequency_evolution"
+        )
+
+    png = outdir / f"{outfile_stem}.png"
+    pdf = outdir / f"{outfile_stem}.pdf"
+
+    fig.savefig(png, dpi=200, bbox_inches="tight")
+    fig.savefig(pdf, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"Saved: {png}")
+    print(f"Saved: {pdf}")
+
+    print()
+    print(f"Frequency evolution plot: {structure_base}")
+    print(f"modes      : {modes}")
+    print(f"metric     : {metric}")
+    print(f"selection  : {selection}")
+    print(f"top_n      : {'all' if top_n is None else top_n}")
+    print(f"y_axis     : {y_axis}")
+    print(f"color_by   : {color_by}")
+    if hparam_filters:
+        print(f"filters    : {hparam_filters}")
+
+    for struct, rows_all, rows, selected in selected_info:
+        print()
+        print(f"{struct}: selected {len(selected)} runs")
+        for row in selected[:10]:
+            global_rank = rows_all.index(row) + 1
+            filtered_rank = rows.index(row) + 1
+            hp_label = row.get("hyperparam_label", "")
+            if not hp_label:
+                hp_label = format_hyperparams(row.get("hyperparameters", {}))
+
+            print(
+                f"  global rank {global_rank:>4d} | "
+                f"filtered rank {filtered_rank:>4d} | "
+                f"{metric} {row['metric_value']:>10.5g} | "
+                f"{hp_label}"
+            )
+
+        if len(selected) > 10:
+            print(f"  ... {len(selected) - 10} more")
+
 
 
 ###########################################################################
@@ -1185,6 +1944,60 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use stored model spectrum amplitudes without renormalizing.",
     )
 
+    p_freq_evo = sub.add_parser(
+        "frequency-evolution",
+        help=(
+            "Plot matched phonon-frequency evolution over ranked models, "
+            "with HSEsol and PBEsol next to each other."
+        ),
+    )
+    add_common_args(p_freq_evo)
+    p_freq_evo.add_argument("--structure", required=True)
+    p_freq_evo.add_argument("--outfile-stem", default=None)
+    p_freq_evo.add_argument("--metric", default="composite_score")
+    p_freq_evo.add_argument(
+        "--selection",
+        choices=["top", "spaced"],
+        default="spaced",
+    )
+    p_freq_evo.add_argument("--top-n", type=int, default=None)
+    p_freq_evo.add_argument(
+        "--modes",
+        choices=["matched_modes", "ir_active"],
+        default="matched_modes",
+    )
+    p_freq_evo.add_argument(
+        "--y-axis",
+        choices=["rank", "filtered_rank", "rank_percentile", "metric"],
+        default="rank_percentile",
+    )
+    p_freq_evo.add_argument(
+        "--color-by",
+        choices=[
+            "abs_delta_cm1",
+            "one_minus_overlap",
+            "overlap",
+            "intensity_abs_error",
+        ],
+        default="abs_delta_cm1",
+    )
+    p_freq_evo.add_argument(
+        "--hparam",
+        action="append",
+        default=None,
+        help=(
+            "Filter by hyperparameter. Can be given multiple times. "
+            "Examples: --hparam rmax=4 --hparam fw=75 --hparam seed=2"
+        ),
+    )
+    p_freq_evo.add_argument("--skip-first", type=int, default=3)
+    p_freq_evo.add_argument("--ir-intensity-tolerance", type=float, default=2.0)
+    p_freq_evo.add_argument(
+        "--no-error-bands",
+        action="store_true",
+        help="Disable median frequency-error bands around reference lines.",
+    )
+    p_freq_evo.add_argument("--color-percentile", type=float, default=98.0)
 
     return parser
 
@@ -1250,6 +2063,28 @@ def main() -> None:
             normalize_ir=not args.no_normalize_ir,
             skip_first=args.skip_first,
             degeneracy_tol=args.degeneracy_tol,
+        )
+
+    elif args.command == "frequency-evolution":
+        hparam_filters = _parse_hparam_filters(args.hparam)
+
+        plot_phonon_frequency_evolution_pair(
+            ref_db=args.ref_db,
+            structure_base=args.structure,
+            outdir=args.outdir,
+            outfile_stem=args.outfile_stem,
+            metric=args.metric,
+            selection=args.selection,
+            top_n=args.top_n,
+            modes=args.modes,
+            y_axis=args.y_axis,
+            color_by=args.color_by,
+            hparam_filters=hparam_filters,
+            skip_first=args.skip_first,
+            ir_intensity_tolerance_cm1=args.ir_intensity_tolerance,
+            show_error_bands=not args.no_error_bands,
+            color_percentile=args.color_percentile,
+            style_path=args.style,
         )
 
     else:

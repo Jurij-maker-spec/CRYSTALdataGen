@@ -1,3 +1,25 @@
 conda activate mace_env_3_12
 
 nohup python -u run_master.py --config configs/your_config.yaml > run_master.log 2>&1 & 
+
+
+# Tree command 
+tree -L 4 -a \
+  -I ".git|__pycache__|*.pyc|*.pyo|*.png|*.pdf|*.xyz|*.npz|*.npy|*.h5|*.pth|*.model|wandb|logs|checkpoints" \
+  > project_tree.txt
+
+# tree comannd
+tree -L 5 -a \
+  -I ".git|__pycache__|*.pyc|*.pyo|*.png|*.pdf|*.xyz|*.npz|*.npy|*.h5|*.pth|*.model|wandb|checkpoints" \
+  structures structures_pbe results \
+  > time_summary_tree.txt
+
+# Count files
+
+find structures structures_pbe -type f -name "*.out" 2>/dev/null | wc -l
+find results -type f -name "train.log" 2>/dev/null | wc -l
+
+# Only relevant files
+find structures structures_pbe -type f -name "*.out" 2>/dev/null > crystal_out_files.txt
+find results -type f -name "train.log" 2>/dev/null > train_log_files.txt
+  

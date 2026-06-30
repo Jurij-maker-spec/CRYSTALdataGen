@@ -328,4 +328,64 @@ class CrystalOutputParser:
         # freqs, intensities, degeneracies, irreps = extract_from_outfile(self)
         return extract_from_outfile(self.filepath)
 
+    def get_cpu_time_seconds(self):
+        """
+        Parse CRYSTAL CPU time in seconds.
+
+        Priority:
+        1) TOTAL CPU TIME = ...        # summed CPU/core time over all ranks
+        2) sum of NODE ... CPU TIME    # fallback if TOTAL is missing
+        3) END ... TELAPSE ... TCPU    # fallback for serial/simpler outputs
+        4) last TELAPSE ... TCPU       # final fallback
+
+        Returns
+        -------
+        float
+            CPU time in seconds.
+        """
+        float_re = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][+-]?\d+)?"
+
+        def to_float(x):
+            return float(x.replace("D", "E").replace("d", "e"))
+
+        total_re = re.compile(
+            rf"TOTAL\s+CPU\s+TIME\s*=\s*({float_re})",
+            re.IGNORECASE,
+        )
+        node_re = re.compile(
+            rf"NODE\s+\d+\s+CPU\s+TIME\s*=\s*({float_re})",
+            re.IGNORECASE,
+        )
+        end_tcpu_re = re.compile(
+            rf"\bEND\b.*?\bTELAPSE\s+({float_re})\s+TCPU\s+({float_re})",
+            re.IGNORECASE,
+        )
+        any_tcpu_re = re.compile(
+            rf"\bTELAPSE\s+({float_re})\s+TCPU\s+({float_re})",
+            re.IGNORECASE,
+        )
+
+        total_matches = [to_float(m.group(1)) for m in total_re.finditer(self.text)]
+        if total_matches:
+            return total_matches[-1]
+
+        node_matches = [to_float(m.group(1)) for m in node_re.finditer(self.text)]
+        if node_matches:
+            return sum(node_matches)
+
+        end_matches = list(end_tcpu_re.finditer(self.text))
+        if end_matches:
+            return to_float(end_matches[-1].group(2))
+
+        any_matches = list(any_tcpu_re.finditer(self.text))
+        if any_matches:
+            return to_float(any_matches[-1].group(2))
+
+        raise ValueError(f"Could not parse CPU time from {self.filepath}")
+
+    def get_cpu_time_hours(self):
+        """
+        Parse CRYSTAL CPU time in hours.
+        """
+        return self.get_cpu_time_seconds() / 3600.0
 

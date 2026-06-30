@@ -1,4 +1,12 @@
-from util.ref_db import backfill_hyperparameters_from_run_ids
+from pathlib import Path
+import sys
+PYTHON_SCRIPTS_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = PYTHON_SCRIPTS_ROOT
+sys.path.insert(0, str(PYTHON_SCRIPTS_ROOT))
+from util.ref_db import (
+    backfill_hyperparameters_from_run_ids,
+    merge_backfill_hyperparameters_from_run_ids,
+)
 
 structures = [
     "SiO2",
@@ -12,11 +20,17 @@ structures = [
 ]
 
 for struct in structures:
-    backfill_hyperparameters_from_run_ids(
-        "data/ref_db.h5",
+    # backfill_hyperparameters_from_run_ids(
+    #     "data/ref_db.h5",
+    #     structure=struct,
+    #     train_size_map_path="data/train_size_map.txt",
+    #     overwrite=True,
+    #     dry_run=False,
+    # )
+    merge_backfill_hyperparameters_from_run_ids(
+        PROJECT_ROOT / "data/ref_db.h5",
         structure=struct,
-        train_size_map_path="data/train_size_map.txt",
-        overwrite=True,
+        train_size_map_path= PROJECT_ROOT / "data/train_size_map.txt",
         dry_run=False,
     )
     

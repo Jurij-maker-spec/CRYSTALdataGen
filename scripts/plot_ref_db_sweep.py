@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from matplotlib.ticker import MaxNLocator
 
 from explore_ref_db_sweep import (
     split_matches_structure,
@@ -28,7 +29,7 @@ CMAP = plt.get_cmap("managua")
 # ------------------------------------------------------------------
 FUNCTIONAL = {
     'SiO2': r'SiO$_2$ HSEsol',
-    'SiO2_PBE': r'SiO$2$ PBEsol',
+    'SiO2_PBE': r'SiO$_2$ PBEsol',
     'TiO2_rutil': r'TiO$_2$ HSEsol',
     'TiO2_rutil_PBE': r'TiO$_2$ PBEsol',
     'Al2O3': r'Al$_2$O$_3$ HSEsol',
@@ -62,7 +63,7 @@ def add_broken_axis_marks(
     ax_top,
     ax_bottom,
     *,
-    slash_size=0.012,
+    slash_size=0.008,
     linewidth=0.9,
     color="black",
     draw_horizontal=True,
@@ -335,10 +336,10 @@ def add_style_legends(
     # Adaptive legend sizing
     base_height=0.070,
     item_height=0.040,
-    gap=0.002,
+    gap=0.006,
     # Text / box styling
-    fontsize=13,
-    title_fontsize=14,
+    fontsize=12,
+    title_fontsize=13,
     frameon=True,
 ):
     """
@@ -451,6 +452,246 @@ def add_style_legends(
     add_legend_block(size_handles, r"Training size")
 
 
+def _robust_upper_limit(
+    values,
+    *,
+    percentile: float = 98.0,
+    pad_frac: float = 0.08,
+):
+    """
+    Return a robust upper y-limit that ignores extreme high outliers.
+
+    values:
+        array-like score values for the upper broken-axis panel.
+
+    percentile:
+        visual cap percentile. 98 means the top 2% are treated as outliers.
+
+    Returns
+    -------
+    ymax_visual, outlier_mask
+    """
+    values = np.asarray(values, dtype=float)
+    finite = np.isfinite(values)
+
+    if not np.any(finite):
+        return None, np.zeros_like(values, dtype=bool)
+
+    vals = values[finite]
+
+    ymax = float(np.nanpercentile(vals, percentile))
+    ymin = float(np.nanmin(vals))
+
+    span = max(ymax - ymin, 1e-12)
+    ymax_visual = ymax + pad_frac * span
+
+    outlier_mask = values > ymax_visual
+
+    return ymax_visual, outlier_mask
+
+
+def _split_landscape_rows_for_broken_axis(
+    rows,
+    *,
+    y_key: str,
+    threshold: float,
+):
+    """
+    Assign every row to exactly one broken-axis panel.
+
+    bottom_rows:
+        rows with y <= threshold, i.e. the top-fraction/best models.
+
+    top_rows:
+        rows with y > threshold, i.e. the remaining models.
+
+    No row is returned twice.
+    """
+    bottom_rows = []
+    top_rows = []
+
+    for row in rows:
+        y = safe_float(row.get(y_key))
+
+        if not np.isfinite(y):
+            continue
+
+        if y <= threshold:
+            bottom_rows.append(row)
+        else:
+            top_rows.append(row)
+
+    return top_rows, bottom_rows
+
+
+def _score_limits_with_padding(
+    values,
+    *,
+    global_span: float,
+    lower_frac: float = 0.12,
+    upper_frac: float = 0.12,
+):
+    """
+    Compute y-limits with enough padding to avoid marker clipping.
+
+    The padding is intentionally a bit generous because the largest marker
+    areas in the landscape plot are large and may otherwise be cut at the
+    broken-axis boundary.
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+
+    if values.size == 0:
+        return None
+
+    vmin = float(np.min(values))
+    vmax = float(np.max(values))
+
+    local_span = max(vmax - vmin, 1e-12)
+    base_span = max(local_span, 0.05 * global_span, 1e-12)
+
+    lower_pad = lower_frac * base_span
+    upper_pad = upper_frac * base_span
+
+    return vmin - lower_pad, vmax + upper_pad
+
+
+def _parse_axes_text_loc(
+    loc: str,
+    *,
+    default_horizontal: str = "left",
+    pad: float = 0.05,
+) -> dict:
+    """
+    Parse simple text locations into axes coordinates and alignment.
+
+    Supported examples
+    ------------------
+    "top left"
+    "top center"
+    "top right"
+    "center left"
+    "center center"
+    "center right"
+    "bottom left"
+    "bottom center"
+    "bottom right"
+
+    Also accepts common Matplotlib-style aliases:
+    "upper left", "upper center", "upper right",
+    "lower left", "lower center", "lower right",
+    and the one-word forms "top", "center", "bottom".
+
+    Returns
+    -------
+    dict with x, y, ha, va
+    """
+    if loc is None:
+        loc = "top left"
+
+    loc = str(loc).strip().lower().replace("_", " ").replace("-", " ")
+    tokens = [tok for tok in loc.split() if tok]
+
+    vertical_aliases = {
+        "top": "top",
+        "upper": "top",
+        "center": "center",
+        "middle": "center",
+        "bottom": "bottom",
+        "lower": "bottom",
+    }
+
+    horizontal_aliases = {
+        "left": "left",
+        "center": "center",
+        "middle": "center",
+        "right": "right",
+    }
+
+    # One-word legacy compatibility:
+    #   "top"    -> top left
+    #   "bottom" -> bottom left
+    #   "center" -> center center
+    if len(tokens) == 1:
+        tok = tokens[0]
+
+        if tok == "center":
+            vertical = "center"
+            horizontal = "center"
+        elif tok in vertical_aliases:
+            vertical = vertical_aliases[tok]
+            horizontal = default_horizontal
+        elif tok in horizontal_aliases:
+            vertical = "center"
+            horizontal = horizontal_aliases[tok]
+        else:
+            raise ValueError(f"Unknown text location: {loc!r}")
+
+    elif len(tokens) == 2:
+        first, second = tokens
+
+        if first in vertical_aliases and second in horizontal_aliases:
+            vertical = vertical_aliases[first]
+            horizontal = horizontal_aliases[second]
+
+        elif first in horizontal_aliases and second in vertical_aliases:
+            # Allows "left top" as well as "top left".
+            vertical = vertical_aliases[second]
+            horizontal = horizontal_aliases[first]
+
+        else:
+            raise ValueError(f"Unknown text location: {loc!r}")
+
+    else:
+        raise ValueError(f"Unknown text location: {loc!r}")
+
+    x_map = {
+        "left": pad,
+        "center": 0.5,
+        "right": 1.0 - pad,
+    }
+
+    y_map = {
+        "bottom": pad,
+        "center": 0.5,
+        "top": 1.0 - pad,
+    }
+
+    return {
+        "x": x_map[horizontal],
+        "y": y_map[vertical],
+        "ha": horizontal,
+        "va": vertical,
+    }
+
+
+def add_axes_box_label(
+    ax,
+    text: str,
+    *,
+    loc: str = "top left",
+    fontsize: float = 14,
+    pad: float = 0.05,
+    bbox_alpha: float = 0.9,
+):
+    """
+    Add a boxed label to an axes using text locations like
+    'top center', 'center center', or 'bottom right'.
+    """
+    spec = _parse_axes_text_loc(loc, pad=pad)
+
+    return ax.text(
+        spec["x"],
+        spec["y"],
+        text,
+        transform=ax.transAxes,
+        va=spec["va"],
+        ha=spec["ha"],
+        size=fontsize,
+        bbox=dict(boxstyle="round", facecolor="white", alpha=bbox_alpha),
+    )
+
+
 # ------------------------------------------------------------------
 # Plotting
 # ------------------------------------------------------------------
@@ -460,9 +701,9 @@ def plot_landscape(
         structure, 
         outdir, 
         top_fraction=0.10,
-        label_pos='top',
+        label_pos='top left',
         scale=0.9,
-        ls = 18,        # labelsize
+        ls = 16,        # labelsize
         ts = 14,         # textsize
         #
         ):
@@ -473,8 +714,13 @@ def plot_landscape(
 
     rows = sorted(rows, key=lambda r: safe_float(r.get("composite_score")))
     comp_score = np.asarray([safe_float(r.get("composite_score")) for r in rows], dtype=float)
+    outlier_threshold = comp_score[-2]
+    print(outlier_threshold*1.5)
+    comp_score = comp_score[comp_score<=outlier_threshold]
     cs_min = float(np.min(comp_score))
     cs_max = float(np.max(comp_score))
+
+
 
     top_threshold = make_success_threshold(
         rows,
@@ -498,69 +744,144 @@ def plot_landscape(
         2, 1,
         sharex=True,
         gridspec_kw={"height_ratios": [1.35, 1.0]},
-        figsize=(7.5, 7.5),
+        figsize=(7.5 * scale, 7.5 * scale),
         constrained_layout=False,
     )
-    fig.subplots_adjust(hspace=0.06, wspace=0.01, right=0.86)
+    fig.subplots_adjust(hspace=0.02, wspace=0.005, right=0.86)
     ax_top, ax_bottom = axs
 
-    for ax in axs:
-        scatter_styled_rows(
-            ax,
-            rows,
-            "r_max",
-            "composite_score",
-            energy_colors,
-            force_hatches,
-            size_area_map,
+    total_span = max(cs_max - cs_min, 1e-12)
+
+    # ------------------------------------------------------------
+    # Assign each row to exactly one panel.
+    # This removes duplicated points and avoids clipping artifacts
+    # from plotting the full dataset into both broken-axis axes.
+    # ------------------------------------------------------------
+    upper_rows, lower_rows = _split_landscape_rows_for_broken_axis(
+        rows,
+        y_key="composite_score",
+        threshold=top_threshold,
+    )
+
+    upper_scores = np.asarray(
+        [safe_float(r.get("composite_score")) for r in upper_rows],
+        dtype=float,
+    )
+
+    upper_ymax_visual, upper_outlier_mask = _robust_upper_limit(
+        upper_scores,
+        percentile=98.0,
+        pad_frac=0.08,
+    )
+
+    if upper_ymax_visual is not None:
+        upper_rows_plot = [
+            row for row, is_outlier in zip(upper_rows, upper_outlier_mask)
+            if not is_outlier
+        ]
+        upper_outlier_rows = [
+            row for row, is_outlier in zip(upper_rows, upper_outlier_mask)
+            if is_outlier
+        ]
+    else:
+        upper_rows_plot = upper_rows
+        upper_outlier_rows = []
+
+
+    lower_scores = np.asarray(
+        [safe_float(r.get("composite_score")) for r in lower_rows],
+        dtype=float,
+    )
+
+    lower_ylim = _score_limits_with_padding(
+        lower_scores,
+        global_span=total_span,
+        lower_frac=0.08,
+        upper_frac=0.09,
+    )
+
+    upper_ylim = _score_limits_with_padding(
+        upper_scores,
+        global_span=total_span,
+        lower_frac=0.07,
+        upper_frac=0.06,
+    )
+
+
+
+    ###### Not ready you have to continue with the outlier
+
+
+
+
+    if lower_ylim is None:
+        raise RuntimeError("No rows assigned to lower broken-axis panel.")
+
+    # In rare cases all rows may fall into the top fraction.
+    # Then keep a minimal upper panel instead of crashing.
+    if upper_ylim is None:
+        upper_ylim = (
+            top_threshold + 0.05 * total_span,
+            cs_max + 0.10 * total_span,
         )
 
-    total_span = max(cs_max - cs_min, 1e-12)
-    bottom_span = max(top_threshold - cs_min, 1e-12)
-    bottom_pad = max(0.08 * bottom_span, 0.015 * total_span)
-    top_pad = max(0.04 * total_span, 1e-12)
-    gap = max(0.01 * total_span, 1e-12)
+    # ------------------------------------------------------------
+    # Plot rows only once.
+    # ------------------------------------------------------------
+    scatter_styled_rows(
+        ax_bottom,
+        lower_rows,
+        "r_max",
+        "composite_score",
+        energy_colors,
+        force_hatches,
+        size_area_map,
+    )
 
-    bottom_upper = top_threshold + bottom_pad
-    top_lower = min(top_threshold + gap, cs_max - 0.05 * total_span)
-    if top_lower <= bottom_upper:
-        top_lower = bottom_upper + gap
-    if top_lower >= cs_max:
-        top_lower = top_threshold
+    scatter_styled_rows(
+        ax_top,
+        upper_rows,
+        "r_max",
+        "composite_score",
+        energy_colors,
+        force_hatches,
+        size_area_map,
+    )
 
-    ax_bottom.set_ylim(cs_min - bottom_pad, bottom_upper)
-    ax_top.set_ylim(top_lower, cs_max + top_pad)
+    ax_bottom.set_ylim(*lower_ylim)
+    ax_top.set_ylim(*upper_ylim)
 
     ax_top.spines["bottom"].set_visible(False)
     ax_bottom.spines["top"].set_visible(False)
     ax_top.tick_params(labeltop=False, bottom=False, labelsize=14)
     ax_bottom.tick_params(top=False, labelsize=14)
-    add_broken_axis_marks(ax_top, ax_bottom)
+
+    add_broken_axis_marks(
+        ax_top,
+        ax_bottom,
+        draw_horizontal=True,
+        draw_diagonal=True,
+    )
+
+    for ax in axs:
+        ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+
+    # ax_bottom.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    add_axes_box_label(
+        ax_bottom,
+        f"Top {100.0 * top_fraction:g}\\% models: {len(top_rows)}/{len(rows)}",
+        loc=label_pos,
+        fontsize=ts,
+        pad=0.02,
+    )
 
     ax_top.text(
-        0.05,
-        0.95,
+        0.015,
+        1.02,
         f"{FUNCTIONAL[structure]}",
         transform=ax_top.transAxes,
-        va="top",
-        ha="left",
-        size=ts,
-        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
-    )
-    if label_pos == 'top':
-        posi = 0.95
-    elif label_pos == 'bottom':
-        posi = 0.05
-    elif label_pos == 'center':
-        print('HERE')
-        posi = 0.5
-        
-    ax_bottom.text(
-        0.05,
-        posi,
-        f"Top {100.0 * top_fraction:g}\\% models: {len(top_rows)}/{len(rows)}",
-        transform=ax_bottom.transAxes,
-        va=label_pos,
+        va="bottom",
         ha="left",
         size=ts,
         bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
@@ -584,157 +905,158 @@ def plot_landscape(
     plt.close(fig)
 
 
-def plot_score_decomposition(rows, structure, outdir):
-    keys = [
-        "score_freq_mae_term",
-        "score_intensity_corr_term",
-        "energy_weight",
-        "forces_weight",
-        "seed",
-        "size",
-    ]
-    rows = require_keys(rows, keys)
-    if not rows:
-        raise RuntimeError("No rows with all required score-decomposition keys.")
 
-    rows = sorted(rows, key=lambda r: safe_float(r.get("score_freq_mae_term")))
+# def plot_score_decomposition(rows, structure, outdir):
+#     keys = [
+#         "score_freq_mae_term",
+#         "score_intensity_corr_term",
+#         "energy_weight",
+#         "forces_weight",
+#         "seed",
+#         "size",
+#     ]
+#     rows = require_keys(rows, keys)
+#     if not rows:
+#         raise RuntimeError("No rows with all required score-decomposition keys.")
 
-    (
-        energy_weights,
-        seeds,
-        force_weights,
-        train_sizes,
-        size_area_map,
-        energy_colors,
-        force_hatches,
-    ) = make_style_maps(rows)
+#     rows = sorted(rows, key=lambda r: safe_float(r.get("score_freq_mae_term")))
 
-    fig, ax = plt.subplots(
-        figsize=(7.5, 7.5),
-        constrained_layout=False,
-    )
-    fig.subplots_adjust(right=0.86)
+#     (
+#         energy_weights,
+#         seeds,
+#         force_weights,
+#         train_sizes,
+#         size_area_map,
+#         energy_colors,
+#         force_hatches,
+#     ) = make_style_maps(rows)
 
-    scatter_styled_rows(
-        ax,
-        rows,
-        "score_freq_mae_term",
-        "score_intensity_corr_term",
-        energy_colors,
-        hatch_map,
-        train_size_map,
-    )
+#     fig, ax = plt.subplots(
+#         figsize=(7.5, 7.5),
+#         constrained_layout=False,
+#     )
+#     fig.subplots_adjust(right=0.86)
 
-    ax.text(
-        0.05,
-        0.95,
-        f"{structure}",
-        transform=ax.transAxes,
-        va="top",
-        ha="left",
-        size=18,
-        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
-    )
+#     scatter_styled_rows(
+#         ax,
+#         rows,
+#         "score_freq_mae_term",
+#         "score_intensity_corr_term",
+#         energy_colors,
+#         hatch_map,
+#         train_size_map,
+#     )
 
-    ax.set_xlabel("Frequency MAE score term")
-    ax.set_ylabel("Intensity correlation score term")
+#     ax.text(
+#         0.05,
+#         0.95,
+#         f"{structure}",
+#         transform=ax.transAxes,
+#         va="top",
+#         ha="left",
+#         size=18,
+#         bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
+#     )
 
-    add_style_legends(
-        fig,
-        seeds,
-        energy_weights,
-        force_weights,
-        train_sizes,
-        train_size_map,
-        energy_colors,
-        hatch_map,
-    )
+#     ax.set_xlabel("Frequency MAE score term")
+#     ax.set_ylabel("Intensity correlation score term")
 
-    savefig(fig, outdir / f"{structure}_score_decomposition")
-    plt.close(fig)
+#     add_style_legends(
+#         fig,
+#         seeds,
+#         energy_weights,
+#         force_weights,
+#         train_sizes,
+#         train_size_map,
+#         energy_colors,
+#         hatch_map,
+#     )
+
+#     savefig(fig, outdir / f"{structure}_score_decomposition")
+#     plt.close(fig)
 
 
-def plot_physics_quality(rows, structure, outdir):
-    overlap_key = None
-    for candidate in ["crystal_mode_mean_overlap", "diagonal_overlap_mean"]:
-        if any(candidate in r for r in rows):
-            overlap_key = candidate
-            break
+# def plot_physics_quality(rows, structure, outdir):
+#     overlap_key = None
+#     for candidate in ["crystal_mode_mean_overlap", "diagonal_overlap_mean"]:
+#         if any(candidate in r for r in rows):
+#             overlap_key = candidate
+#             break
 
-    if overlap_key is None:
-        raise KeyError(
-            "No mode-overlap metric found. Expected crystal_mode_mean_overlap "
-            "or diagonal_overlap_mean."
-        )
+#     if overlap_key is None:
+#         raise KeyError(
+#             "No mode-overlap metric found. Expected crystal_mode_mean_overlap "
+#             "or diagonal_overlap_mean."
+#         )
 
-    keys = [
-        overlap_key,
-        "freq_mae_ir_cm1",
-        "intensity_pearson_r",
-        "energy_weight",
-        "forces_weight",
-        "seed",
-        "size",
-    ]
-    rows = require_keys(rows, keys)
-    if not rows:
-        raise RuntimeError("No rows with all required physics-quality keys.")
+#     keys = [
+#         overlap_key,
+#         "freq_mae_ir_cm1",
+#         "intensity_pearson_r",
+#         "energy_weight",
+#         "forces_weight",
+#         "seed",
+#         "size",
+#     ]
+#     rows = require_keys(rows, keys)
+#     if not rows:
+#         raise RuntimeError("No rows with all required physics-quality keys.")
 
-    rows = sorted(rows, key=lambda r: safe_float(r.get("freq_mae_ir_cm1")))
+#     rows = sorted(rows, key=lambda r: safe_float(r.get("freq_mae_ir_cm1")))
 
-    (
-        energy_weights,
-        seeds,
-        force_weights,
-        train_sizes,
-        size_area_map,
-        energy_colors,
-        force_hatches,
-    ) = make_style_maps(rows)
+#     (
+#         energy_weights,
+#         seeds,
+#         force_weights,
+#         train_sizes,
+#         size_area_map,
+#         energy_colors,
+#         force_hatches,
+#     ) = make_style_maps(rows)
 
-    fig, ax = plt.subplots(
-        figsize=(7.5, 7.5),
-        constrained_layout=False,
-    )
-    fig.subplots_adjust(right=0.86)
+#     fig, ax = plt.subplots(
+#         figsize=(7.5, 7.5),
+#         constrained_layout=False,
+#     )
+#     fig.subplots_adjust(right=0.86)
 
-    scatter_styled_rows(
-        ax,
-        rows,
-        overlap_key,
-        "freq_mae_ir_cm1",
-        energy_colors,
-        hatch_map,
-        train_size_map,
-    )
+#     scatter_styled_rows(
+#         ax,
+#         rows,
+#         overlap_key,
+#         "freq_mae_ir_cm1",
+#         energy_colors,
+#         hatch_map,
+#         train_size_map,
+#     )
 
-    ax.text(
-        0.05,
-        0.95,
-        f"{structure}",
-        transform=ax.transAxes,
-        va="top",
-        ha="left",
-        size=18,
-        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
-    )
+#     ax.text(
+#         0.05,
+#         0.95,
+#         f"{structure}",
+#         transform=ax.transAxes,
+#         va="top",
+#         ha="left",
+#         size=18,
+#         bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
+#     )
 
-    ax.set_xlabel(overlap_key)
-    ax.set_ylabel(r"IR frequency MAE in cm$^{-1}$")
+#     ax.set_xlabel(overlap_key)
+#     ax.set_ylabel(r"IR frequency MAE in cm$^{-1}$")
 
-    add_style_legends(
-        fig,
-        seeds,
-        energy_weights,
-        force_weights,
-        train_sizes,
-        energy_colors,
-        force_hatches,
-        size_area_map,
-    )
+#     add_style_legends(
+#         fig,
+#         seeds,
+#         energy_weights,
+#         force_weights,
+#         train_sizes,
+#         energy_colors,
+#         force_hatches,
+#         size_area_map,
+#     )
 
-    savefig(fig, outdir / f"{structure}_physics_quality")
-    plt.close(fig)
+#     savefig(fig, outdir / f"{structure}_physics_quality")
+#     plt.close(fig)
 
 
 def main():
@@ -763,8 +1085,12 @@ def main():
     parser.add_argument(
         "--label-pos",
         type=str,
-        default='bottom',
-        help='Position of the lower plot text label'
+        default="bottom left",
+        help=(
+            "Position of the lower plot text label. "
+            "Examples: 'top left', 'top center', 'center center', "
+            "'bottom right', 'upper center', 'lower left'."
+        ),
     )
     args = parser.parse_args()
 
@@ -785,10 +1111,12 @@ def main():
         plot_landscape(rows, args.structure, args.outdir, top_fraction=args.top_fraction, label_pos=args.label_pos)
 
     if args.plot in {"all", "decomposition"}:
-        plot_score_decomposition(rows, args.structure, args.outdir)
+        print('Not implemented')
+    #     plot_score_decomposition(rows, args.structure, args.outdir)
 
     if args.plot in {"all", "physics"}:
-        plot_physics_quality(rows, args.structure, args.outdir)
+        print('Not implemented')
+    #     plot_physics_quality(rows, args.structure, args.outdir)
 
 
 if __name__ == "__main__":

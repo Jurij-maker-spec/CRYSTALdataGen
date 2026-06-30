@@ -78,6 +78,7 @@ data/
 manual/
 old/
 script_cli/
+time_summary/
 
 # Generated structure/output folders
 */disto/

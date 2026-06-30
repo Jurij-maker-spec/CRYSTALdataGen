@@ -36,7 +36,7 @@ base_config:
 
 sweep_grid:
   seed: [2]
-  r_max: [2.5, 3.0, 3.5, ]
+  r_max: [2.5, 3.0, 3.5, 4.0, 6.5]
   batch_size: [1]
   valid_batch_size: [1]
   energy_weight: [2.0]

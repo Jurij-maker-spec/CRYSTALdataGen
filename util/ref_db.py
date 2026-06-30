@@ -140,6 +140,30 @@ def infer_train_size_from_split_name(split: str) -> dict[str, Any] | None:
             out["split_val"] = max(a, b) / (a + b)
             out["source"] = "inferred_from_split"
             return out
+        
+
+    # ------------------------------------------------------------
+    # Pattern E:
+    #   <prefix>_<a>_<b>_<free-form-suffix>
+    #
+    # Example:
+    #   TiO2_rutil_PBE_10_90_rec_cut
+    #
+    # Only infer split_val, not size. Require a+b=100 to avoid
+    # confusing unrelated numeric tokens with split metadata.
+    # ------------------------------------------------------------
+    parts = split.split("_")
+    for i in range(len(parts) - 1):
+        if not (parts[i].isdigit() and parts[i + 1].isdigit()):
+            continue
+
+        a = int(parts[i])
+        b = int(parts[i + 1])
+
+        if a + b == 100:
+            out["split_val"] = max(a, b) / (a + b)
+            out["source"] = "inferred_from_split"
+            return out
 
     return None
 
@@ -152,7 +176,7 @@ def parse_hyperparams_from_run_id(run_id: str) -> dict[str, Any]:
 
     Returns keys only when they are found:
         batch_size, max_epochs, energy_weight, forces_weight,
-        r_max, seed, size
+        r_max, seed, size, les_dl
 
     Notes
     -----
@@ -170,6 +194,7 @@ def parse_hyperparams_from_run_id(run_id: str) -> dict[str, Any]:
         "r_max": rf"(?:^|_)rmax(?P<value>{float_token})(?:_|$)",
         "seed": rf"(?:^|_)seed(?P<value>[0-9]+)(?:_|$)",
         "size": rf"(?:^|_)n(?P<value>[0-9]+)(?:_|$)",
+        "les_dl": rf"(?:^|_)lesdl(?P<value>{float_token})(?:_|$)",
     }
 
     int_keys = {"batch_size", "max_epochs", "seed", "size"}
@@ -378,6 +403,7 @@ def format_hyperparams(
     *,
     keys: tuple[str, ...] = (
         "r_max",
+        "les_dl",
         "energy_weight",
         "forces_weight",
         "seed",
@@ -397,6 +423,7 @@ def format_hyperparams(
 
     labels = {
         "r_max": "rmax",
+        "les_dl": "lesdl",
         "energy_weight": "ew",
         "forces_weight": "fw",
         "seed": "seed",
@@ -564,6 +591,161 @@ def update_model_ranking_metrics(
 
         rg = eg.create_group("ranking_metrics")
         write_attrs(rg, ranking_metrics)
+
+
+#################################################################
+# Backfill Mergers
+#################################################################
+def merge_backfill_hyperparameters_from_run_ids(
+    ref_db_path: str | Path,
+    *,
+    structure: str | None = None,
+    train_size_map_path: str | Path | None = None,
+    dry_run: bool = False,
+    fill_split_from_name: bool = True,
+) -> None:
+    """
+    Merge-backfill /hyperparameters attrs for old model evaluations.
+
+    Unlike backfill_hyperparameters_from_run_ids(...), this function:
+        - never deletes an existing /hyperparameters group
+        - never overwrites an existing attr
+        - only adds missing attrs
+        - can create /hyperparameters if absent
+
+    Sources:
+        1. run_id parser:
+            bs, ep, ew, fw, rmax, seed, _n<size>, optional lesdl
+        2. optional train_size_map:
+            structure, split, split_val, size, source
+        3. optional split-name inference:
+            e.g. TiO2_rutil_PBE_10_90_rec_cut -> split_val=0.9
+    """
+    ref_db_path = Path(ref_db_path)
+
+    train_size_rows = None
+    if train_size_map_path is not None:
+        train_size_rows = load_train_size_map(train_size_map_path)
+
+    mode = "DRY-RUN" if dry_run else "WRITE"
+    print("=" * 100)
+    print(f"HYPERPARAMETER MERGE BACKFILL [{mode}]")
+    print("=" * 100)
+    print(f"ref_db               : {ref_db_path}")
+    print(f"structure filter     : {structure}")
+    print(f"train_size_map       : {train_size_map_path}")
+    print(f"fill_split_from_name : {fill_split_from_name}")
+    print()
+
+    n_seen = 0
+    n_created_group = 0
+    n_updated_runs = 0
+    n_added_attrs = 0
+    n_no_candidate_attrs = 0
+    n_no_map = 0
+
+    with h5py.File(ref_db_path, "a" if not dry_run else "r") as h5:
+        structures_root = h5["structures"]
+
+        structure_names = (
+            [structure]
+            if structure is not None
+            else list(structures_root.keys())
+        )
+
+        for structure_name in structure_names:
+            eval_root_path = f"structures/{structure_name}/evaluations"
+
+            if eval_root_path not in h5:
+                continue
+
+            eval_root = h5[eval_root_path]
+
+            for split_name, split_group in eval_root.items():
+                if not isinstance(split_group, h5py.Group):
+                    continue
+
+                for sweep_name, sweep_group in split_group.items():
+                    if not isinstance(sweep_group, h5py.Group):
+                        continue
+
+                    for run_id, run_group in sweep_group.items():
+                        if not isinstance(run_group, h5py.Group):
+                            continue
+
+                        n_seen += 1
+
+                        hp = parse_hyperparams_from_run_id(run_id)
+
+                        map_row = None
+
+                        if train_size_rows is not None:
+                            map_row = find_train_size_map_row(
+                                train_size_rows,
+                                structure=structure_name,
+                                split=split_name,
+                            )
+
+                            if map_row is None:
+                                n_no_map += 1
+
+                        if map_row is None and fill_split_from_name:
+                            inferred = infer_train_size_from_split_name(split_name)
+                            if inferred is not None:
+                                map_row = inferred
+
+                        hp = merge_hyperparams_with_train_size_map(hp, map_row)
+
+                        if not hp:
+                            n_no_candidate_attrs += 1
+                            continue
+
+                        existing = {}
+                        if "hyperparameters" in run_group:
+                            existing = dict(run_group["hyperparameters"].attrs)
+
+                        attrs_to_add = {
+                            key: value
+                            for key, value in hp.items()
+                            if key not in existing
+                            and clean_attr_value(value) is not None
+                        }
+
+                        if not attrs_to_add:
+                            continue
+
+                        msg = (
+                            f"{structure_name} / {split_name} / "
+                            f"{sweep_name} / {run_id}: add {attrs_to_add}"
+                        )
+
+                        if dry_run:
+                            print(f"would merge-backfill {msg}")
+                        else:
+                            if "hyperparameters" not in run_group:
+                                hp_group = run_group.create_group("hyperparameters")
+                                n_created_group += 1
+                            else:
+                                hp_group = run_group["hyperparameters"]
+
+                            for key, value in attrs_to_add.items():
+                                hp_group.attrs[str(key)] = clean_attr_value(value)
+
+                            print(f"merge-backfilled {msg}")
+
+                        n_updated_runs += 1
+                        n_added_attrs += len(attrs_to_add)
+
+    print()
+    print("=" * 100)
+    print("SUMMARY")
+    print("=" * 100)
+    print(f"seen                : {n_seen}")
+    print(f"updated runs        : {n_updated_runs}")
+    print(f"created hp groups   : {n_created_group}")
+    print(f"added attrs         : {n_added_attrs}")
+    print(f"no candidate attrs  : {n_no_candidate_attrs}")
+    print(f"no map match        : {n_no_map}")
 
 
 def backfill_hyperparameters_from_run_ids(
@@ -1509,6 +1691,7 @@ def read_hyperparameters_from_group(group: h5py.Group, run_id: str | None = None
 
     attr_aliases = {
         "r_max": ["r_max", "rmax"],
+        "les_dl": ["les_dl", "lesdl", "reciprocal_cutoff", "reciprocal_space_cutoff"],
         "energy_weight": ["energy_weight", "ew"],
         "forces_weight": ["forces_weight", "fw"],
         "seed": ["seed"],
@@ -1669,4 +1852,130 @@ def list_model_evaluations_for_structure(
         )
 
     return rows
+
+
+def read_mode_matches(
+    ref_db_path: str | Path,
+    structure: str,
+    run_id: str,
+    dataset_split: str = "ungrouped",
+    sweep_id: str = "manual",
+) -> dict[str, Any]:
+    """
+    Read cached one-to-one mode matches from:
+
+        /structures/<structure>/evaluations/<split>/<sweep>/<run>/
+            mode_matching/mode_matches
+
+    Returns arrays:
+        ref_mode_index
+        model_mode_index
+        ref_freq_cm1
+        model_freq_cm1
+        delta_cm1
+        abs_delta_cm1
+        overlap
+    """
+    path = model_evaluation_group_path(
+        structure=structure,
+        dataset_split=dataset_split,
+        sweep_id=sweep_id,
+        run_id=run_id,
+    )
+
+    with h5py.File(ref_db_path, "r") as h5:
+        if path not in h5:
+            raise KeyError(f"Missing model evaluation group: {path}")
+
+        eg = h5[path]
+
+        mm_path = "mode_matching/mode_matches"
+        if mm_path not in eg:
+            raise KeyError(f"Missing cached mode matches: {path}/{mm_path}")
+
+        mm = eg[mm_path]
+
+        required = [
+            "ref_mode_index",
+            "model_mode_index",
+            "ref_freq_cm1",
+            "model_freq_cm1",
+            "delta_cm1",
+            "abs_delta_cm1",
+            "overlap",
+        ]
+
+        missing = [key for key in required if key not in mm]
+        if missing:
+            raise KeyError(f"Missing mode-match datasets in {path}/{mm_path}: {missing}")
+
+        return {
+            key: np.asarray(mm[key][()])
+            for key in required
+        }
+
+
+def read_ir_peak_matches(
+    ref_db_path: str | Path,
+    structure: str,
+    run_id: str,
+    dataset_split: str = "ungrouped",
+    sweep_id: str = "manual",
+) -> dict[str, Any]:
+    """
+    Read cached matched IR peaks from:
+
+        /structures/<structure>/evaluations/<split>/<sweep>/<run>/
+            ir_matching/matched_peaks
+
+    Required arrays:
+        model_freq_cm1
+        ref_freq_cm1
+        delta_cm1
+        abs_delta_cm1
+
+    Optional arrays:
+        model_intensity
+        ref_intensity
+    """
+    path = model_evaluation_group_path(
+        structure=structure,
+        dataset_split=dataset_split,
+        sweep_id=sweep_id,
+        run_id=run_id,
+    )
+
+    with h5py.File(ref_db_path, "r") as h5:
+        if path not in h5:
+            raise KeyError(f"Missing model evaluation group: {path}")
+
+        eg = h5[path]
+
+        mp_path = "ir_matching/matched_peaks"
+        if mp_path not in eg:
+            raise KeyError(f"Missing cached IR peak matches: {path}/{mp_path}")
+
+        mp = eg[mp_path]
+
+        required = [
+            "model_freq_cm1",
+            "ref_freq_cm1",
+            "delta_cm1",
+            "abs_delta_cm1",
+        ]
+
+        missing = [key for key in required if key not in mp]
+        if missing:
+            raise KeyError(f"Missing IR-match datasets in {path}/{mp_path}: {missing}")
+
+        out = {
+            key: np.asarray(mp[key][()])
+            for key in required
+        }
+
+        for key in ["model_intensity", "ref_intensity"]:
+            if key in mp:
+                out[key] = np.asarray(mp[key][()])
+
+        return out
 

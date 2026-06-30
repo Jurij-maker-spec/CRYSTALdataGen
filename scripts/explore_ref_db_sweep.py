@@ -130,6 +130,7 @@ def parse_run_id(run_id: str) -> dict:
         "energy_weight": r"(?:^|_)ew([0-9.eE+p+-]+)(?:_|$)",
         "forces_weight": r"(?:^|_)fw([0-9.eE+p+-]+)(?:_|$)",
         "r_max": r"(?:^|_)rmax([0-9.eE+p+-]+)(?:_|$)",
+        "les_dl": r"(?:^|_)lesdl([0-9.eE+p+-]+)(?:_|$)",
         "seed": r"(?:^|_)seed([0-9]+)(?:_|$)",
         # Old cumulative-size suffix. Store as parsed size, not train_size.
         "size": r"_n([0-9]+)(?:_|$)",
@@ -143,7 +144,7 @@ def parse_run_id(run_id: str) -> dict:
         value = m.group(1)
         if key in {"batch_size", "max_epochs", "seed", "size"}:
             value = int(value)
-        elif key in {"energy_weight", "forces_weight", "r_max"}:
+        elif key in {"energy_weight", "forces_weight", "r_max", "les_dl"}:
             value = parse_float_token(value)
         out[key] = value
     return out
@@ -151,10 +152,17 @@ def parse_run_id(run_id: str) -> dict:
 
 def parse_split_size(path_split: str, structure: str) -> dict:
     """
-    Parse possible size-like information from the path-level split name.
+    Parse possible size/split information from the path-level split name.
 
     This is fallback/diagnostic only. The path-level split is not authoritative.
     Authoritative size and split_val should come from DB hyperparameters.
+
+    Supported examples:
+        SiO2_1000_10_90
+            -> size_split=1000, split_val=0.9
+
+        TiO2_rutil_PBE_10_90_rec_cut
+            -> split_val=0.9, no size_split
     """
     out = {}
     prefix = structure + "_"
@@ -164,8 +172,31 @@ def parse_split_size(path_split: str, structure: str) -> dict:
     tail = path_split[len(prefix):]
     parts = tail.split("_")
 
-    if len(parts) >= 3 and parts[0].isdigit():
-        out["size_split"] = int(parts[0])
+    # Pattern: <size>_<a>_<b>
+    # Example: SiO2_1000_10_90
+    if (
+        len(parts) >= 3
+        and parts[0].isdigit()
+        and parts[1].isdigit()
+        and parts[2].isdigit()
+    ):
+        a = int(parts[1])
+        b = int(parts[2])
+
+        if a + b == 100:
+            out["size_split"] = int(parts[0])
+            out["split_val"] = max(a, b) / (a + b)
+            return out
+
+    # Pattern: <a>_<b>_<suffix>
+    # Example: TiO2_rutil_PBE_10_90_rec_cut
+    # Only infer split_val, not size.
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        a = int(parts[0])
+        b = int(parts[1])
+
+        if a + b == 100:
+            out["split_val"] = max(a, b) / (a + b)
 
     return out
 
@@ -255,7 +286,7 @@ def normalize_hyperparameter_dict(hp):
         seed
     """
     int_keys = {"batch_size", "max_epochs", "seed", "size"}
-    float_keys = {"energy_weight", "forces_weight", "r_max", "split_val"}
+    float_keys = {"energy_weight", "forces_weight", "r_max", "les_dl", "split_val"}
 
     out = {}
     for key, value in hp.items():
@@ -341,6 +372,7 @@ def make_analysis_row(*, structure, path_split, sweep_id, run_id, run_group):
         "energy_weight",
         "forces_weight",
         "r_max",
+        "les_dl",
         "seed",
         "size",
         "split_val",
@@ -775,6 +807,7 @@ def print_pooled_hyperparameter_ranking(
     """
     parameters = [
         ("r_max", r"$r_\mathrm{max}$"),
+        ("les_dl", r"$d_\mathrm{LES}$"),
         ("energy_weight", r"$w_E$"),
         ("forces_weight", r"$w_F$"),
         ("size", r"$N$"),
@@ -836,11 +869,12 @@ def print_pooled_hyperparameter_ranking(
                     safe_float(r.get("size")),
                     safe_float(r.get("split_val")),
                     safe_float(r.get("r_max")),
+                    safe_float(r.get("les_dl")),
                     safe_float(r.get("energy_weight")),
                     safe_float(r.get("forces_weight")),
                 )
                 for r in group_rows
-                if all(np.isfinite(safe_float(r.get(k))) for k in ["size", "split_val", "r_max", "energy_weight", "forces_weight"])
+                if all(np.isfinite(safe_float(r.get(k))) for k in ["size", "split_val", "r_max", "les_dl", "energy_weight", "forces_weight"])
             ))
             size_text, split_text = _size_split_text(group_rows)
             n_success = sum(safe_float(r.get(metric)) <= success_threshold for r in group_rows)
@@ -897,7 +931,7 @@ def print_pooled_hyperparameter_ranking(
     print("=" * 150)
     print("BEST POOLED VALUES")
     print("=" * 150)
-    for param in ["r_max", "energy_weight", "forces_weight", "size", "split_val"]:
+    for param in ["r_max", "les_dl", "energy_weight", "forces_weight", "size", "split_val"]:
         if param not in pooled_best:
             continue
         r = pooled_best[param]
@@ -925,6 +959,7 @@ def print_probabilistic_hyperparameter_analysis(rows, *, metric="composite_score
 
     pooled_params = [
         ("r_max", "r_max"),
+        ("les_dl", "lesdl"),
         ("energy_weight", "ew"),
         ("forces_weight", "fw"),
         ("size", "size"),
@@ -971,6 +1006,7 @@ def print_probabilistic_hyperparameter_analysis(rows, *, metric="composite_score
             safe_float(r.get("size")),
             safe_float(r.get("split_val")),
             safe_float(r.get("r_max")),
+            safe_float(r.get("les_dl")),
             safe_float(r.get("energy_weight")),
             safe_float(r.get("forces_weight")),
         )
@@ -979,13 +1015,14 @@ def print_probabilistic_hyperparameter_analysis(rows, *, metric="composite_score
 
     tuple_records = []
     for key, group_rows in tuple_groups.items():
-        size, split_val, r_max, ew, fw = key
+        size, split_val, r_max, les_dl, ew, fw = key
         summary = summarize_success_group(group_rows, metric=metric, threshold=threshold, ci=ci)
         tuple_records.append({
             "label": key,
             "size": size,
             "split_val": split_val,
             "r_max": r_max,
+            "les_dl": les_dl,
             "energy_weight": ew,
             "forces_weight": fw,
             **summary,
@@ -1000,12 +1037,12 @@ def print_probabilistic_hyperparameter_analysis(rows, *, metric="composite_score
     print("-" * 130)
     print("FULL TUPLE PROBABILITIES")
     print("-" * 130)
-    header = f"{'size':>8} {'split':>8} {'r_max':>7} {'ew':>7} {'fw':>7} {'n':>5} {'succ':>6} {'raw':>8} {'post_mean':>10} {'CI_low':>10} {'CI_high':>10} {'P(best)':>10} {'median':>10} {'best':>10}"
+    header = f"{'size':>8} {'split':>8} {'r_max':>7} {'lesdl':>7} {'ew':>7} {'fw':>7} {'n':>5} {'succ':>6} {'raw':>8} {'post_mean':>10} {'CI_low':>10} {'CI_high':>10} {'P(best)':>10} {'median':>10} {'best':>10}"
     print(header)
     print("-" * len(header))
     for r in tuple_records[:20]:
         print(
-            f"{r['size']:>8.4g} {r['split_val']:>8.4g} {r['r_max']:>7.3g} {r['energy_weight']:>7.3g} {r['forces_weight']:>7.3g} "
+            f"{r['size']:>8.4g} {r['split_val']:>8.4g} {r['r_max']:>7.3g} {r['les_dl']:>7.3g} {r['energy_weight']:>7.3g} {r['forces_weight']:>7.3g} "
             f"{r['n']:>5d} {r['successes']:>6d} {100 * r['raw_rate']:>7.1f}% {100 * r['posterior_mean']:>9.1f}% "
             f"{100 * r['ci_low']:>9.1f}% {100 * r['ci_high']:>9.1f}% {100 * r['p_best']:>9.1f}% "
             f"{r['median_score']:>10.4g} {r['best_score']:>10.4g}"
@@ -1014,7 +1051,7 @@ def print_probabilistic_hyperparameter_analysis(rows, *, metric="composite_score
 
 def print_parameter_source_summary(rows, parameters=None):
     if parameters is None:
-        parameters = ["r_max", "energy_weight", "forces_weight", "seed", "size", "split_val"]
+        parameters = ["r_max", "les_dl", "energy_weight", "forces_weight", "seed", "size", "split_val"]
 
     print()
     print("PARAMETER SOURCE / CONSISTENCY SUMMARY")
@@ -1063,6 +1100,7 @@ def print_size_interaction_ranking(rows, metric="composite_score", n_best=30):
 
     interaction_specs = [
         ("SIZE x R_MAX", ["size", "r_max"]),
+        ("LES_DL x R_MAX", ["les_dl", "r_max"]),
         ("SPLIT_VAL x R_MAX", ["split_val", "r_max"]),
         ("SIZE x SPLIT_VAL", ["size", "split_val"]),
         ("SIZE x SPLIT_VAL x FULL HYPERPARAMETER TUPLE", ["size", "split_val", "r_max", "energy_weight", "forces_weight"]),
@@ -1172,7 +1210,7 @@ def summarize_structure(
     missing_param_counts = defaultdict(int)
     model_rows = []
 
-    expected_params = ["model_type", "batch_size", "max_epochs", "energy_weight", "forces_weight", "r_max", "seed", "size", "split_val"]
+    expected_params = ["model_type", "batch_size", "max_epochs", "energy_weight", "forces_weight", "r_max", "les_dl", "seed", "size", "split_val"]
 
     for path_split, sweep_id, run_id, run_group in runs:
         path_split_values.add(path_split)

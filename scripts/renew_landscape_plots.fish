@@ -1,12 +1,12 @@
 #!/home/jha/.local/bin/fish
 conda activate mace_env
 
-python plot_ref_db_sweep.py --structure SiO2 --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/SiO2 --plot landscape --label-pos center
-python plot_ref_db_sweep.py --structure SiO2_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/SiO2 --plot landscape --label-pos center
-python plot_ref_db_sweep.py --structure AlN --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/AlN --plot landscape --label-pos center
-python plot_ref_db_sweep.py --structure AlN_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/AlN --plot landscape --label-pos center
-python plot_ref_db_sweep.py --structure Al2O3 --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/Al2O3 --plot landscape --label-pos top
-python plot_ref_db_sweep.py --structure Al2O3_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/Al2O3 --plot landscape --label-pos center
-python plot_ref_db_sweep.py --structure TiO2_rutil --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/TiO2_rutil --plot landscape --label-pos center
-python plot_ref_db_sweep.py --structure TiO2_rutil_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/TiO2_rutil --plot landscape --label-pos 'center'
+#python plot_ref_db_sweep.py --structure SiO2 --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/SiO2 --plot landscape --label-pos 'center right'
+#python plot_ref_db_sweep.py --structure SiO2_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/SiO2 --plot landscape --label-pos 'center right'
+#python plot_ref_db_sweep.py --structure AlN --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/AlN --plot landscape --label-pos 'center left'
+#python plot_ref_db_sweep.py --structure AlN_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/AlN --plot landscape --label-pos 'center left'
+#python plot_ref_db_sweep.py --structure Al2O3 --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/Al2O3 --plot landscape --label-pos 'bottom center'
+#python plot_ref_db_sweep.py --structure Al2O3_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/Al2O3 --plot landscape --label-pos 'center center'
+#python plot_ref_db_sweep.py --structure TiO2_rutil --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/TiO2_rutil --plot landscape --label-pos 'center left'
+python plot_ref_db_sweep.py --structure TiO2_rutil_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/TiO2_rutil --plot landscape --label-pos 'center left'
 
