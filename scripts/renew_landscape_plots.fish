@@ -8,5 +8,5 @@ conda activate mace_env
 #python plot_ref_db_sweep.py --structure Al2O3 --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/Al2O3 --plot landscape --label-pos 'bottom center'
 #python plot_ref_db_sweep.py --structure Al2O3_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/Al2O3 --plot landscape --label-pos 'center center'
 #python plot_ref_db_sweep.py --structure TiO2_rutil --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/TiO2_rutil --plot landscape --label-pos 'center left'
-python plot_ref_db_sweep.py --structure TiO2_rutil_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/TiO2_rutil --plot landscape --label-pos 'center left'
+python plot_ref_db_sweep.py --structure TiO2_rutil_PBE --outdir /home/jha/jha/python_scripts/master_thesis/figures/results/TiO2_rutil --plot landscape --label-pos 'center left' --upper-percentile 99.0
 

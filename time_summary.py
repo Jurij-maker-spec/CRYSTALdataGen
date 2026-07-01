@@ -17,6 +17,8 @@ Outputs:
     time_summary/time_summary.txt
     time_summary/time_summary.json
     time_summary/time_summary_grouped.csv
+    time_summary/time_summary_compact.csv
+    time_summary/time_summary_grouped.tex
     time_summary/crystal_cpu_detail.csv
     time_summary/gpu_training_detail.csv
 
@@ -25,6 +27,8 @@ Notes:
   The preferred source is the final "TOTAL CPU TIME = ..." line.
 - GPU training time is estimated from train.log timestamps.
   With one GPU per run, GPU-hours = training wall-hours.
+- By default, training also contributes one auxiliary CPU-hour per GPU-hour.
+  This can be changed with --cpu-hours-per-gpu-hour.
 - By default, large gaps between consecutive train.log timestamps are subtracted
   from the GPU total. This avoids strong overcounting for appended/resumed logs.
 """
@@ -104,6 +108,7 @@ class GPUTrainingRecord:
     n_segments: int
     gpus_per_run: int
     gpu_hours: Optional[float]
+    cpu_hours: Optional[float]
     status: str
     error: str = ""
 
@@ -364,6 +369,7 @@ def collect_gpu_training_records(
     known_structures: list[str],
     gap_hours: float,
     gpus_per_run: int,
+    cpu_hours_per_gpu_hour: float,
 ) -> list[GPUTrainingRecord]:
     records: list[GPUTrainingRecord] = []
 
@@ -393,8 +399,10 @@ def collect_gpu_training_records(
             ) = summarize_timestamp_span(timestamps, gap_hours=gap_hours)
 
             gpu_hours = None
+            cpu_hours = None
             if adjusted_wall_hours is not None:
                 gpu_hours = adjusted_wall_hours * gpus_per_run
+                cpu_hours = gpu_hours * cpu_hours_per_gpu_hour
 
             first_timestamp = timestamps[0].isoformat(sep=" ") if timestamps else ""
             last_timestamp = timestamps[-1].isoformat(sep=" ") if timestamps else ""
@@ -419,6 +427,7 @@ def collect_gpu_training_records(
                     n_segments=n_segments,
                     gpus_per_run=gpus_per_run,
                     gpu_hours=gpu_hours,
+                    cpu_hours=cpu_hours,
                     status=status,
                     error=error,
                 )
@@ -444,6 +453,7 @@ def collect_gpu_training_records(
                     n_segments=0,
                     gpus_per_run=gpus_per_run,
                     gpu_hours=None,
+                    cpu_hours=None,
                     status="failed",
                     error=str(exc),
                 )
@@ -518,6 +528,7 @@ def group_gpu(records: list[GPUTrainingRecord]) -> list[dict[str, object]]:
         if rec.gpu_hours is not None:
             row["n_ok"] += 1
             row["gpu_hours"] += rec.gpu_hours
+            row["cpu_hours"] += rec.cpu_hours or 0.0
             row["raw_wall_hours"] += rec.raw_wall_hours or 0.0
             row["ignored_gap_hours"] += rec.ignored_gap_hours or 0.0
         else:
@@ -544,53 +555,13 @@ def format_hours(hours: float) -> str:
     return f"{hours:,.2f}"
 
 
-def make_text_summary(
-    crystal_records: list[CrystalCPURecord],
-    gpu_records: list[GPUTrainingRecord],
-    grouped_rows: list[dict[str, object]],
-    project_root: Path,
-    structure_roots: list[Path],
-    results_root: Path,
-    gap_hours: float,
-    gpus_per_run: int,
-) -> str:
-    total_cpu_hours = sum_optional(rec.cpu_hours for rec in crystal_records)
-    total_gpu_hours = sum_optional(rec.gpu_hours for rec in gpu_records)
-    total_gpu_raw_wall_hours = sum_optional(rec.raw_wall_hours for rec in gpu_records)
-    total_ignored_gap_hours = sum_optional(rec.ignored_gap_hours for rec in gpu_records)
+def make_compact_grouped_rows(grouped_rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    """
+    Build the compact grouped table printed in time_summary.txt.
 
-    n_crystal_ok = sum(1 for rec in crystal_records if rec.cpu_hours is not None)
-    n_crystal_failed = len(crystal_records) - n_crystal_ok
-    n_gpu_ok = sum(1 for rec in gpu_records if rec.gpu_hours is not None)
-    n_gpu_failed = len(gpu_records) - n_gpu_ok
-
-    lines: list[str] = []
-    lines.append("TIME SUMMARY")
-    lines.append("=" * 80)
-    lines.append(f"Project root              : {project_root}")
-    lines.append(f"CRYSTAL roots             : {', '.join(str(p) for p in structure_roots if p.exists()) or 'none found'}")
-    lines.append(f"Results root              : {results_root if results_root.exists() else 'not found'}")
-    lines.append(f"GPU count per train.log   : {gpus_per_run}")
-    lines.append(f"Resume gap threshold      : {gap_hours:g} h")
-    lines.append("")
-    lines.append("TOTALS")
-    lines.append("-" * 80)
-    lines.append(f"CRYSTAL CPU core-hours    : {format_hours(total_cpu_hours)}")
-    lines.append(f"MACE GPU-hours adjusted   : {format_hours(total_gpu_hours)}")
-    lines.append(f"MACE raw wall-hours       : {format_hours(total_gpu_raw_wall_hours)}")
-    lines.append(f"Ignored resume-gap hours  : {format_hours(total_ignored_gap_hours)}")
-    lines.append("")
-    lines.append("PARSE COUNTS")
-    lines.append("-" * 80)
-    lines.append(f"CRYSTAL .out files parsed : {n_crystal_ok}")
-    lines.append(f"CRYSTAL .out failed       : {n_crystal_failed}")
-    lines.append(f"train.log files parsed    : {n_gpu_ok}")
-    lines.append(f"train.log failed          : {n_gpu_failed}")
-    lines.append(f"CRYSTAL statuses          : {count_status(crystal_records)}")
-    lines.append(f"train.log statuses        : {count_status(gpu_records)}")
-    lines.append("")
-
-    # Compact grouped report: by source/structure/functional/job_kind.
+    The more detailed grouped_rows may contain one row per sweep.  This compact
+    version collapses those rows to source/structure/functional/job_kind.
+    """
     compact: dict[tuple[str, str, str, str], dict[str, float | int | str]] = {}
     for row in grouped_rows:
         key = (
@@ -617,13 +588,131 @@ def make_text_summary(
         compact[key]["cpu_hours"] += float(row.get("cpu_hours", 0.0) or 0.0)
         compact[key]["gpu_hours"] += float(row.get("gpu_hours", 0.0) or 0.0)
 
-    if compact:
+    return sorted(
+        compact.values(),
+        key=lambda r: (
+            str(r["source_type"]),
+            str(r["structure"]),
+            str(r["functional"]),
+            str(r["job_kind"]),
+        ),
+    )
+
+
+def latex_escape(value: object) -> str:
+    text = str(value)
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
+    }
+    return "".join(replacements.get(ch, ch) for ch in text)
+
+
+def make_latex_grouped_table(compact_rows: list[dict[str, object]]) -> str:
+    """
+    Create a LaTeX/booktabs table matching the GROUPED SUMMARY table in
+    time_summary.txt.
+    """
+    lines: list[str] = []
+    lines.append(r"\begin{table}[htbp]")
+    lines.append(r"\centering")
+    lines.append(r"\caption{Consumed CPU and GPU hours grouped by source, structure, functional, and job type.}")
+    lines.append(r"\label{tab:time_summary_grouped}")
+    lines.append(r"\small")
+    lines.append(r"\begin{tabular}{llllrrrrr}")
+    lines.append(r"\toprule")
+    lines.append(r"Source & Structure & Functional & Kind & Files & OK & Failed & CPU h & GPU h \\")
+    lines.append(r"\midrule")
+    for row in compact_rows:
+        lines.append(
+            "{} & {} & {} & {} & {:d} & {:d} & {:d} & {:.2f} & {:.2f} \\\\".format(
+                latex_escape(row["source_type"]),
+                latex_escape(row["structure"]),
+                latex_escape(row["functional"]),
+                latex_escape(row["job_kind"]),
+                int(row["n_files"]),
+                int(row["n_ok"]),
+                int(row["n_failed"]),
+                float(row["cpu_hours"]),
+                float(row["gpu_hours"]),
+            )
+        )
+    lines.append(r"\bottomrule")
+    lines.append(r"\end{tabular}")
+    lines.append(r"\end{table}")
+    return "\n".join(lines) + "\n"
+
+
+def make_text_summary(
+    crystal_records: list[CrystalCPURecord],
+    gpu_records: list[GPUTrainingRecord],
+    grouped_rows: list[dict[str, object]],
+    project_root: Path,
+    structure_roots: list[Path],
+    results_root: Path,
+    gap_hours: float,
+    gpus_per_run: int,
+    cpu_hours_per_gpu_hour: float,
+) -> str:
+    crystal_cpu_hours = sum_optional(rec.cpu_hours for rec in crystal_records)
+    training_cpu_hours = sum_optional(rec.cpu_hours for rec in gpu_records)
+    total_cpu_hours = crystal_cpu_hours + training_cpu_hours
+    total_gpu_hours = sum_optional(rec.gpu_hours for rec in gpu_records)
+    total_gpu_raw_wall_hours = sum_optional(rec.raw_wall_hours for rec in gpu_records)
+    total_ignored_gap_hours = sum_optional(rec.ignored_gap_hours for rec in gpu_records)
+
+    n_crystal_ok = sum(1 for rec in crystal_records if rec.cpu_hours is not None)
+    n_crystal_failed = len(crystal_records) - n_crystal_ok
+    n_gpu_ok = sum(1 for rec in gpu_records if rec.gpu_hours is not None)
+    n_gpu_failed = len(gpu_records) - n_gpu_ok
+
+    lines: list[str] = []
+    lines.append("TIME SUMMARY")
+    lines.append("=" * 80)
+    lines.append(f"Project root              : {project_root}")
+    lines.append(f"CRYSTAL roots             : {', '.join(str(p) for p in structure_roots if p.exists()) or 'none found'}")
+    lines.append(f"Results root              : {results_root if results_root.exists() else 'not found'}")
+    lines.append(f"GPU count per train.log   : {gpus_per_run}")
+    lines.append(f"CPU h per GPU h           : {cpu_hours_per_gpu_hour:g}")
+    lines.append(f"Resume gap threshold      : {gap_hours:g} h")
+    lines.append("")
+    lines.append("TOTALS")
+    lines.append("-" * 80)
+    lines.append(f"CRYSTAL CPU core-hours    : {format_hours(crystal_cpu_hours)}")
+    lines.append(f"MACE training CPU-hours   : {format_hours(training_cpu_hours)}")
+    lines.append(f"CPU-hours incl. training  : {format_hours(total_cpu_hours)}")
+    lines.append(f"MACE GPU-hours adjusted   : {format_hours(total_gpu_hours)}")
+    lines.append(f"MACE raw wall-hours       : {format_hours(total_gpu_raw_wall_hours)}")
+    lines.append(f"Ignored resume-gap hours  : {format_hours(total_ignored_gap_hours)}")
+    lines.append("")
+    lines.append("PARSE COUNTS")
+    lines.append("-" * 80)
+    lines.append(f"CRYSTAL .out files parsed : {n_crystal_ok}")
+    lines.append(f"CRYSTAL .out failed       : {n_crystal_failed}")
+    lines.append(f"train.log files parsed    : {n_gpu_ok}")
+    lines.append(f"train.log failed          : {n_gpu_failed}")
+    lines.append(f"CRYSTAL statuses          : {count_status(crystal_records)}")
+    lines.append(f"train.log statuses        : {count_status(gpu_records)}")
+    lines.append("")
+
+    # Compact grouped report: by source/structure/functional/job_kind.
+    compact_rows = make_compact_grouped_rows(grouped_rows)
+
+    if compact_rows:
         lines.append("GROUPED SUMMARY")
         lines.append("-" * 80)
         header = f"{'source':<14} {'structure':<14} {'functional':<8} {'kind':<9} {'files':>7} {'ok':>7} {'fail':>7} {'CPU h':>12} {'GPU h':>12}"
         lines.append(header)
         lines.append("-" * len(header))
-        for row in sorted(compact.values(), key=lambda r: (str(r["source_type"]), str(r["structure"]), str(r["functional"]), str(r["job_kind"]))):
+        for row in compact_rows:
             lines.append(
                 f"{str(row['source_type']):<14} "
                 f"{str(row['structure']):<14} "
@@ -654,7 +743,8 @@ def make_text_summary(
 
     lines.append("Notes:")
     lines.append("- CRYSTAL CPU hours are core-hours from the final TOTAL CPU TIME line where available.")
-    lines.append("- GPU hours use adjusted train.log wall-time times one GPU per run.")
+    lines.append("- GPU hours use adjusted train.log wall-time times the GPU count per run.")
+    lines.append("- Training CPU hours are GPU-hours multiplied by CPU h per GPU h.")
     lines.append("- Large timestamp gaps above the threshold are treated as resume/idle gaps and excluded from adjusted GPU totals.")
     return "\n".join(lines) + "\n"
 
@@ -674,6 +764,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=Path("time_summary"), help="Output directory. Default: time_summary.")
     parser.add_argument("--gap-hours", type=float, default=6.0, help="Timestamp gap threshold for resumed/appended train.log files. Default: 6 hours.")
     parser.add_argument("--gpus-per-run", type=int, default=1, help="GPU count per training run. Default: 1.")
+    parser.add_argument(
+        "--cpu-hours-per-gpu-hour",
+        type=float,
+        default=1.0,
+        help="Auxiliary CPU-hours charged per GPU-hour for training. Default: 1.0.",
+    )
     parser.add_argument("--include-slurm-out", action="store_true", help="Also scan slurm-*.out files under structure roots. Default: skip them.")
     return parser
 
@@ -713,9 +809,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         known_structures=known_structures,
         gap_hours=args.gap_hours,
         gpus_per_run=args.gpus_per_run,
+        cpu_hours_per_gpu_hour=args.cpu_hours_per_gpu_hour,
     )
 
     grouped_rows = group_crystal(crystal_records) + group_gpu(gpu_records)
+    compact_rows = make_compact_grouped_rows(grouped_rows)
 
     crystal_rows = [asdict(rec) for rec in crystal_records]
     gpu_rows = [asdict(rec) for rec in gpu_records]
@@ -723,6 +821,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     write_csv(output_dir / "crystal_cpu_detail.csv", crystal_rows)
     write_csv(output_dir / "gpu_training_detail.csv", gpu_rows)
     write_csv(output_dir / "time_summary_grouped.csv", grouped_rows)
+    write_csv(output_dir / "time_summary_compact.csv", compact_rows)
+    (output_dir / "time_summary_grouped.tex").write_text(
+        make_latex_grouped_table(compact_rows),
+        encoding="utf-8",
+    )
 
     summary_payload = {
         "project_root": str(project_root),
@@ -731,8 +834,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         "output_dir": str(output_dir),
         "gap_hours": args.gap_hours,
         "gpus_per_run": args.gpus_per_run,
+        "cpu_hours_per_gpu_hour": args.cpu_hours_per_gpu_hour,
         "totals": {
             "crystal_cpu_hours": sum_optional(rec.cpu_hours for rec in crystal_records),
+            "training_cpu_hours": sum_optional(rec.cpu_hours for rec in gpu_records),
+            "total_cpu_hours_including_training": (
+                sum_optional(rec.cpu_hours for rec in crystal_records)
+                + sum_optional(rec.cpu_hours for rec in gpu_records)
+            ),
             "gpu_hours_adjusted": sum_optional(rec.gpu_hours for rec in gpu_records),
             "gpu_raw_wall_hours": sum_optional(rec.raw_wall_hours for rec in gpu_records),
             "ignored_gap_hours": sum_optional(rec.ignored_gap_hours for rec in gpu_records),
@@ -744,6 +853,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "crystal_status_counts": count_status(crystal_records),
         "gpu_status_counts": count_status(gpu_records),
         "grouped": grouped_rows,
+        "compact_grouped": compact_rows,
     }
     (output_dir / "time_summary.json").write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
 
@@ -756,6 +866,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         results_root=results_root,
         gap_hours=args.gap_hours,
         gpus_per_run=args.gpus_per_run,
+        cpu_hours_per_gpu_hour=args.cpu_hours_per_gpu_hour,
     )
     (output_dir / "time_summary.txt").write_text(text_summary, encoding="utf-8")
 

@@ -705,7 +705,7 @@ def plot_landscape(
         scale=0.9,
         ls = 16,        # labelsize
         ts = 14,         # textsize
-        #
+        upper_percentile = 100
         ):
     keys = ["r_max", "composite_score", "energy_weight", "forces_weight", "seed", "size"]
     rows = require_keys(rows, keys)
@@ -715,7 +715,7 @@ def plot_landscape(
     rows = sorted(rows, key=lambda r: safe_float(r.get("composite_score")))
     comp_score = np.asarray([safe_float(r.get("composite_score")) for r in rows], dtype=float)
     outlier_threshold = comp_score[-2]
-    print(outlier_threshold*1.5)
+    print(outlier_threshold)
     comp_score = comp_score[comp_score<=outlier_threshold]
     cs_min = float(np.min(comp_score))
     cs_max = float(np.max(comp_score))
@@ -770,8 +770,8 @@ def plot_landscape(
 
     upper_ymax_visual, upper_outlier_mask = _robust_upper_limit(
         upper_scores,
-        percentile=98.0,
-        pad_frac=0.08,
+        percentile=upper_percentile,
+        pad_frac=0.02,
     )
 
     if upper_ymax_visual is not None:
@@ -800,8 +800,13 @@ def plot_landscape(
         upper_frac=0.09,
     )
 
+    upper_scores_plot = np.asarray(
+        [safe_float(r.get("composite_score")) for r in upper_rows_plot],
+        dtype=float,
+    )
+
     upper_ylim = _score_limits_with_padding(
-        upper_scores,
+        upper_scores_plot,
         global_span=total_span,
         lower_frac=0.07,
         upper_frac=0.06,
@@ -819,10 +824,11 @@ def plot_landscape(
 
     # In rare cases all rows may fall into the top fraction.
     # Then keep a minimal upper panel instead of crashing.
+
     if upper_ylim is None:
         upper_ylim = (
             top_threshold + 0.05 * total_span,
-            cs_max + 0.10 * total_span,
+            upper_ymax_visual if upper_ymax_visual is not None else cs_max,
         )
 
     # ------------------------------------------------------------
@@ -1092,6 +1098,15 @@ def main():
             "'bottom right', 'upper center', 'lower left'."
         ),
     )
+    parser.add_argument(
+        "--upper-percentile",
+        type=float,
+        default=100.0,
+        help=(
+            "Robust upper y-limit percentile for the upper broken-axis panel. "
+            "Extreme values above this visual range are summarized as outliers."
+        ),
+    )
     args = parser.parse_args()
 
     with h5py.File(args.ref_db, "r") as h5:
@@ -1108,7 +1123,14 @@ def main():
     args.outdir = args.outdir # / f"{args.structure}"
 
     if args.plot in {"all", "landscape"}:
-        plot_landscape(rows, args.structure, args.outdir, top_fraction=args.top_fraction, label_pos=args.label_pos)
+        plot_landscape(
+            rows, 
+            args.structure, 
+            args.outdir, 
+            top_fraction=args.top_fraction, 
+            label_pos=args.label_pos,
+            upper_percentile=args.upper_percentile,
+            )
 
     if args.plot in {"all", "decomposition"}:
         print('Not implemented')

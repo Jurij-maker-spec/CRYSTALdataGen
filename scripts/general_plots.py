@@ -1785,7 +1785,7 @@ def plot_phonon_frequency_evolution_pair(
     png = outdir / f"{outfile_stem}.png"
     pdf = outdir / f"{outfile_stem}.pdf"
 
-    fig.savefig(png, dpi=200, bbox_inches="tight")
+    # fig.savefig(png, dpi=200, bbox_inches="tight")
     fig.savefig(pdf, bbox_inches="tight")
     plt.close(fig)
 
