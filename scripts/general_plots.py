@@ -383,7 +383,7 @@ def _marker_sizes_from_intensity(
     intensity_rel: np.ndarray,
     *,
     min_size: float = 10.0,
-    max_size: float = 140.0,
+    max_size: float = 100.0,
 ) -> np.ndarray:
     intensity_rel = np.asarray(intensity_rel, dtype=float)
     intensity_rel = np.nan_to_num(intensity_rel, nan=0.0, posinf=0.0, neginf=0.0)
@@ -651,8 +651,8 @@ def _draw_reference_frequency_lines(
 
     for f, inten in zip(ref_freqs, ref_intensities):
         # IR-active modes get slightly stronger guide lines.
-        alpha = 0.12 + 0.28 * float(np.clip(inten, 0.0, 1.0))
-        lw = 0.5 + 0.8 * float(np.clip(inten, 0.0, 1.0))
+        alpha = 0.4 # + 0.28 * float(np.clip(inten, 0.0, 1.0))
+        lw = 1.0 # + 0.8 * float(np.clip(inten, 0.0, 1.0))
 
         ax.axvline(
             f,
@@ -704,7 +704,7 @@ def _draw_frequency_error_bands(
         ax.axvspan(
             float(rf) - width,
             float(rf) + width,
-            alpha=0.1,
+            alpha=0.05,
             color="black",
             lw=0.0,
             zorder=0,
@@ -1464,6 +1464,240 @@ def plot_modes(
     fig.savefig(pdf, bbox_inches="tight")
 
 
+def _functional_tag_from_structure(structure: str) -> str:
+    """
+    Compact functional tag for filenames.
+    """
+    return "pbe" if str(structure).endswith("_PBE") else "hse"
+
+
+def _compact_freqevo_stem(
+    *,
+    structure: str,
+    modes: str,
+    color_by: str,
+) -> str:
+    """
+    Compact default filename stem.
+
+    Examples
+    --------
+    SiO2_hse_fevo_mm_dnu
+    SiO2_pbe_fevo_ir_ierr
+    """
+    func_tag = _functional_tag_from_structure(structure)
+
+    base = str(structure)
+    if base.endswith("_PBE"):
+        base = base[:-4]
+
+    mode_tag = {
+        "matched_modes": "mm",
+        "ir_active": "ir",
+    }.get(modes, modes)
+
+    color_tag = {
+        "abs_delta_cm1": "dnu",
+        "one_minus_overlap": "1mov",
+        "overlap": "ov",
+        "intensity_abs_error": "ierr",
+    }.get(color_by, color_by)
+
+    return f"{base}_{func_tag}_fevo_{mode_tag}_{color_tag}"
+
+
+def _y_axis_label_for_frequency_evolution(y_axis: str, metric: str) -> str:
+    if y_axis == "rank_percentile":
+        return r"Model rank in \%"
+    if y_axis == "rank":
+        return "Global model rank, 1 = best"
+    if y_axis == "filtered_rank":
+        return "Filtered model rank, 1 = best"
+    if y_axis == "metric":
+        return metric
+
+    raise ValueError(f"Unknown y_axis={y_axis}")
+
+
+def _colorbar_label_for_frequency_evolution(color_by: str) -> str:
+    if color_by == "abs_delta_cm1":
+        return r"$|\Delta \nu|$ in cm$^{-1}$"
+    if color_by == "one_minus_overlap":
+        return r"$1 -$ mode overlap"
+    if color_by == "overlap":
+        return "Mode overlap"
+    if color_by == "intensity_abs_error":
+        return "Abs. norm. intensity error"
+
+    return color_by
+
+
+def _save_single_frequency_evolution_figure(
+    *,
+    pdata: dict,
+    outdir: Path,
+    outfile_stem: str,
+    metric: str,
+    modes: str,
+    y_axis: str,
+    color_by: str,
+    show_error_bands: bool,
+    norm,
+    scale: float,
+    selected_info: tuple,
+) -> Path:
+    """
+    Save one frequency-evolution figure for one functional.
+    """
+    struct, rows_all, rows, selected = selected_info
+    points = pdata["points"]
+
+    fig, ax = plt.subplots(
+        1,
+        1,
+        figsize=(8.2 * scale, 8.2 * scale),
+        constrained_layout=True,
+    )
+
+    _draw_reference_frequency_lines(
+        ax,
+        ref_freqs=pdata["ref_lines"],
+        ref_intensities=pdata["ref_line_intensities"],
+    )
+
+    if show_error_bands:
+        _draw_frequency_error_bands(
+            ax,
+            points=points,
+        )
+
+    sizes = _marker_sizes_from_intensity(points["intensity"])
+
+    scatter = ax.scatter(
+        points["x"],
+        points["y"],
+        c=points["c"],
+        s=sizes,
+        cmap=CMAP,
+        norm=norm,
+        marker="o",
+        alpha=0.72,
+        edgecolors="black",
+        linewidths=0.25,
+        zorder=2,
+    )
+
+    title = FUNCTIONAL.get(struct, struct)
+
+    # ax.text(
+    #     0.01,
+    #     1.02,
+    #     title,
+    #     transform=ax.transAxes,
+    #     ha="left",
+    #     va="bottom",
+    #     fontsize=16,
+    #     bbox=dict(boxstyle="round", facecolor="white", alpha=0.85),
+    # )
+
+    # x-limits from reference and model frequencies.
+    x_candidates = []
+    if pdata["ref_lines"].size:
+        x_candidates.append(pdata["ref_lines"])
+    if points["x"].size:
+        x_candidates.append(points["x"])
+
+    if x_candidates:
+        xx = np.concatenate(x_candidates)
+        xx = xx[np.isfinite(xx)]
+        if xx.size:
+            xmin = float(np.min(xx))
+            xmax = float(np.max(xx))
+            pad = 0.05 * (xmax - xmin) if xmax > xmin else 20.0
+            ax.set_xlim(max(0.0, xmin - pad), xmax + pad)
+
+    ax.margins(x=0.01)
+
+    ax.set_xlabel(r"Matched model frequency in cm$^{-1}$")
+    ax.set_ylabel(_y_axis_label_for_frequency_evolution(y_axis, metric))
+
+    cbar = fig.colorbar(
+        scatter,
+        ax=ax,
+        pad=0.015,
+        anchor=(0.0, 0.5),
+        shrink=0.4,
+    )
+    cbar.set_label(_colorbar_label_for_frequency_evolution(color_by))
+
+    # Size legend for reference intensity.
+    handles = []
+    labels = []
+    legend_values = np.array([0.0, 0.1, 1.0])
+    legend_sizes = _marker_sizes_from_intensity(legend_values)
+
+    for size, label in zip(
+        legend_sizes,
+        ["IR inactive/weak", "medium IR", "strong IR"],
+    ):
+        handles.append(
+            ax.scatter(
+                [],
+                [],
+                s=size,
+                facecolors="none",
+                edgecolors="black",
+                linewidths=0.6,
+            )
+        )
+        labels.append(label)
+
+    fig.legend(
+        handles,
+        labels,
+        title=title,
+        loc="upper center",
+        frameon=True,
+        framealpha=0.9,
+        fontsize=14,
+        title_fontsize=16,
+        bbox_to_anchor=(0.5, 1.09),
+        ncol=3,
+        columnspacing=1.4,
+        handletextpad=0.6,
+        borderpad=0.45,
+    )
+
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    pdf = outdir / f"{outfile_stem}.pdf"
+    fig.savefig(pdf, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"Saved: {pdf}")
+
+    print()
+    print(f"{struct}: selected {len(selected)} runs")
+    for row in selected[:10]:
+        global_rank = rows_all.index(row) + 1
+        filtered_rank = rows.index(row) + 1
+        hp_label = row.get("hyperparam_label", "")
+        if not hp_label:
+            hp_label = format_hyperparams(row.get("hyperparameters", {}))
+
+        print(
+            f"  global rank {global_rank:>4d} | "
+            f"filtered rank {filtered_rank:>4d} | "
+            f"{metric} {row['metric_value']:>10.5g} | "
+            f"{hp_label}"
+        )
+
+    if len(selected) > 10:
+        print(f"  ... {len(selected) - 10} more")
+
+    return pdf
+
+
 def plot_phonon_frequency_evolution_pair(
     *,
     ref_db: Path,
@@ -1483,31 +1717,16 @@ def plot_phonon_frequency_evolution_pair(
     color_percentile: float = 98.0,
     style_path: Path | None = None,
     scale: float = 1.0,
-) -> None:
+) -> dict[str, Path]:
     """
-    Plot model-frequency evolution against model quality for HSEsol/PBEsol.
+    Plot model-frequency evolution against model quality.
 
-    Main use:
-        x-axis  : model-predicted matched frequency
-        y-axis  : rank percentile, rank, filtered rank, or metric
-        vlines  : CRYSTAL reference frequencies
-        color   : |Δν|, 1-overlap, overlap, or intensity error
-        size    : normalized reference IR intensity
+    This writes two separate figures:
+        one for HSEsol
+        one for PBEsol
 
-    modes
-    -----
-    matched_modes:
-        Uses mode_matching/mode_matches.
-        Valid color_by:
-            abs_delta_cm1
-            one_minus_overlap
-            overlap
-
-    ir_active:
-        Uses ir_matching/matched_peaks.
-        Valid color_by:
-            abs_delta_cm1
-            intensity_abs_error
+    The color scale is shared across both figures so the colors remain
+    comparable between functionals.
     """
     apply_style(style_path)
 
@@ -1520,7 +1739,7 @@ def plot_phonon_frequency_evolution_pair(
     if modes not in {"matched_modes", "ir_active"}:
         raise ValueError("modes must be 'matched_modes' or 'ir_active'.")
 
-    hse_name, pbe_name, structure_label = _resolve_structure_pair(structure_base)
+    hse_name, pbe_name, _structure_label = _resolve_structure_pair(structure_base)
     structures = [hse_name, pbe_name]
 
     panel_data = []
@@ -1602,7 +1821,7 @@ def plot_phonon_frequency_evolution_pair(
 
         selected_info.append((struct, rows_all, rows, selected))
 
-    # Shared color scale.
+    # Shared color scale across HSEsol and PBEsol.
     all_c = np.concatenate([
         p["points"]["c"]
         for p in panel_data
@@ -1626,174 +1845,10 @@ def plot_phonon_frequency_evolution_pair(
 
     norm = mpl.colors.Normalize(vmin=cmin, vmax=cmax, clip=True)
 
-    fig, axes = plt.subplots(
-        1,
-        2,
-        figsize=(15.0 * scale, 6.2 * scale),
-        sharey=True,
-        constrained_layout=True,
-    )
-
-    last_scatter = None
-
-    for ax, pdata, functional_label in zip(axes, panel_data, ["HSEsol", "PBEsol"]):
-        points = pdata["points"]
-
-        _draw_reference_frequency_lines(
-            ax,
-            ref_freqs=pdata["ref_lines"],
-            ref_intensities=pdata["ref_line_intensities"],
-        )
-
-        if show_error_bands:
-            _draw_frequency_error_bands(
-                ax,
-                points=points,
-            )
-
-        sizes = _marker_sizes_from_intensity(points["intensity"])
-
-        last_scatter = ax.scatter(
-            points["x"],
-            points["y"],
-            c=points["c"],
-            s=sizes,
-            cmap=CMAP,
-            norm=norm,
-            marker="o",
-            alpha=0.72,
-            edgecolors="black",
-            linewidths=0.25,
-            zorder=2,
-        )
-
-        title = f"{structure_label} {functional_label}"
-        if pdata["structure"] in FUNCTIONAL:
-            title = FUNCTIONAL[pdata["structure"]]
-
-        ax.text(
-            0.03,
-            1.02,
-            title,
-            transform=ax.transAxes,
-            ha="left",
-            va="bottom",
-            fontsize=14,
-            bbox=dict(boxstyle="round", facecolor="white", alpha=0.85),
-        )
-
-        # x-limits from reference and model frequencies.
-        x_candidates = []
-        if pdata["ref_lines"].size:
-            x_candidates.append(pdata["ref_lines"])
-        if points["x"].size:
-            x_candidates.append(points["x"])
-
-        if x_candidates:
-            xx = np.concatenate(x_candidates)
-            xx = xx[np.isfinite(xx)]
-            if xx.size:
-                xmin = float(np.min(xx))
-                xmax = float(np.max(xx))
-                pad = 0.05 * (xmax - xmin) if xmax > xmin else 20.0
-                ax.set_xlim(max(0.0, xmin - pad), xmax + pad)
-
-        
-        ax.margins(x=0.01)
-
-    fig.supxlabel(r"Matched model frequency in cm$^{-1}$")
-
-    if y_axis == "rank_percentile":
-        axes[0].set_ylabel("Model rank percentile, 0 = best")
-    elif y_axis == "rank":
-        axes[0].set_ylabel("Global model rank, 1 = best")
-    elif y_axis == "filtered_rank":
-        axes[0].set_ylabel("Filtered model rank, 1 = best")
-    elif y_axis == "metric":
-        axes[0].set_ylabel(metric)
-
-    if color_by == "abs_delta_cm1":
-        cbar_label = r"$|\Delta \nu|$ in cm$^{-1}$"
-    elif color_by == "one_minus_overlap":
-        cbar_label = r"$1 -$ mode overlap"
-    elif color_by == "overlap":
-        cbar_label = "Mode overlap"
-    elif color_by == "intensity_abs_error":
-        cbar_label = "Abs. norm. intensity error"
-    else:
-        cbar_label = color_by
-
-    cbar = fig.colorbar(
-        last_scatter, 
-        ax=axes, 
-        pad = 0.015,
-        anchor=(0.0, 0.0),
-        shrink=0.775,
-        )
-    cbar.set_label(cbar_label)
-
-    # Size legend for reference intensity.
-    handles = []
-    labels = []
-    legend_values = np.array([0.0, 0.1, 1.0])
-    legend_sizes = _marker_sizes_from_intensity(legend_values)
-
-    for size, label in zip(
-        legend_sizes,
-        ["IR inactive/weak", "medium IR", "strong IR"],
-    ):
-        handles.append(
-            axes[1].scatter(
-                [],
-                [],
-                s=size,
-                facecolors="none",
-                edgecolors="black",
-                linewidths=0.6,
-            )
-        )
-        labels.append(label)
-
-    fig.legend(
-        handles,
-        labels,
-        title="Reference intensity",
-        loc="upper left",
-        frameon=True,
-        framealpha=0.9,
-        fontsize=11,
-        title_fontsize=12,
-        bbox_to_anchor=(0.92, 0.9625)
-    )
-
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    if outfile_stem is None:
-        filter_suffix = ""
-        if hparam_filters:
-            filter_suffix = "_" + "_".join(
-                f"{k}-{v}" for k, v in hparam_filters.items()
-            )
-            filter_suffix = filter_suffix.replace("/", "_")
-
-        n_label = "all" if top_n is None else str(top_n)
-        outfile_stem = (
-            f"{structure_base}_{modes}_{selection}_{top_n}_"
-            f"{metric}_{y_axis}_{color_by}{filter_suffix}_frequency_evolution"
-        )
-
-    png = outdir / f"{outfile_stem}.png"
-    pdf = outdir / f"{outfile_stem}.pdf"
-
-    # fig.savefig(png, dpi=200, bbox_inches="tight")
-    fig.savefig(pdf, bbox_inches="tight")
-    plt.close(fig)
-
-    print(f"Saved: {png}")
-    print(f"Saved: {pdf}")
+    written: dict[str, Path] = {}
 
     print()
-    print(f"Frequency evolution plot: {structure_base}")
+    print(f"Frequency evolution plots: {structure_base}")
     print(f"modes      : {modes}")
     print(f"metric     : {metric}")
     print(f"selection  : {selection}")
@@ -1803,26 +1858,33 @@ def plot_phonon_frequency_evolution_pair(
     if hparam_filters:
         print(f"filters    : {hparam_filters}")
 
-    for struct, rows_all, rows, selected in selected_info:
-        print()
-        print(f"{struct}: selected {len(selected)} runs")
-        for row in selected[:10]:
-            global_rank = rows_all.index(row) + 1
-            filtered_rank = rows.index(row) + 1
-            hp_label = row.get("hyperparam_label", "")
-            if not hp_label:
-                hp_label = format_hyperparams(row.get("hyperparameters", {}))
+    for pdata, info in zip(panel_data, selected_info):
+        struct = pdata["structure"]
 
-            print(
-                f"  global rank {global_rank:>4d} | "
-                f"filtered rank {filtered_rank:>4d} | "
-                f"{metric} {row['metric_value']:>10.5g} | "
-                f"{hp_label}"
+        if outfile_stem is None:
+            stem = _compact_freqevo_stem(
+                structure=struct,
+                modes=modes,
+                color_by=color_by,
             )
+        else:
+            stem = f"{outfile_stem}_{_functional_tag_from_structure(struct)}"
 
-        if len(selected) > 10:
-            print(f"  ... {len(selected) - 10} more")
+        written[struct] = _save_single_frequency_evolution_figure(
+            pdata=pdata,
+            outdir=outdir,
+            outfile_stem=stem,
+            metric=metric,
+            modes=modes,
+            y_axis=y_axis,
+            color_by=color_by,
+            show_error_bands=show_error_bands,
+            norm=norm,
+            scale=scale,
+            selected_info=info,
+        )
 
+    return written
 
 
 ###########################################################################

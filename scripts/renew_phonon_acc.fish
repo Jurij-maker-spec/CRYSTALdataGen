@@ -1,5 +1,5 @@
 #!/home/jha/.local/bin/fish
-conda activate mace_env 
+conda activate mace_env_3_12
  
 python general_plots.py frequency-evolution \
                         --structure SiO2 \

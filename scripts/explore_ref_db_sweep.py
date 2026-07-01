@@ -63,6 +63,20 @@ def format_latex_number(value, digits=4):
     return f"{value:.{digits}g}"
 
 
+def format_latex_number_tab(value, digits=4):
+    value = safe_float(value)
+    if not np.isfinite(value):
+        return "--"
+    return f"{value:.{digits}f}"
+
+
+def format_latex_int(value):
+    value = safe_int(value)
+    if value is None:
+        return "--"
+    return str(value)
+
+
 def median_or_nan(values):
     values = np.asarray(values, dtype=float)
     values = values[np.isfinite(values)]
@@ -351,6 +365,61 @@ def parameter_status(key, *, db_hyperparams, parsed_params, split_info=None):
     return "mismatch"
 
 
+def print_size_resolution_debug(rows, max_rows=40):
+    suspicious = []
+
+    for r in rows:
+        values = {
+            "resolved_size": r.get("size"),
+            "db_size": r.get("db_size"),
+            "run_id_size": r.get("run_id_size"),
+            "path_size_split": r.get("path_size_split"),
+            "metric_size": r.get("metric_size"),
+        }
+
+        finite_values = [
+            safe_float(v)
+            for v in values.values()
+            if np.isfinite(safe_float(v))
+        ]
+
+        has_disagreement = len(set(finite_values)) > 1
+        has_collision = "size" in r.get("_metric_key_collisions", [])
+
+        if has_disagreement or has_collision:
+            suspicious.append((r, values, has_collision))
+
+    if not suspicious:
+        return
+
+    print()
+    print("SIZE RESOLUTION DEBUG")
+    print("-" * 150)
+    header = (
+        f"{'source':>10} {'status':>12} {'resolved':>10} "
+        f"{'db':>10} {'run_id':>10} {'path':>10} {'metric':>10} "
+        f"{'collision':>10}  run_id"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for r, values, has_collision in suspicious[:max_rows]:
+        print(
+            f"{str(r.get('size_source', '--')):>10} "
+            f"{str(r.get('size_status', '--')):>12} "
+            f"{str(values['resolved_size']):>10} "
+            f"{str(values['db_size']):>10} "
+            f"{str(values['run_id_size']):>10} "
+            f"{str(values['path_size_split']):>10} "
+            f"{str(values['metric_size']):>10} "
+            f"{str(has_collision):>10}  "
+            f"{r.get('run_id', '--')}"
+        )
+
+    if len(suspicious) > max_rows:
+        print(f"... {len(suspicious) - max_rows} more rows not shown")
+
+
 def make_analysis_row(*, structure, path_split, sweep_id, run_id, run_group):
     """
     Build one model-analysis row.
@@ -413,11 +482,22 @@ def make_analysis_row(*, structure, path_split, sweep_id, run_id, run_group):
     }
 
     metrics = collect_metric_attrs(run_group)
+    metric_key_collisions = []
+
     for key, value in metrics.items():
         try:
-            row[key] = float(value)
+            value_out = float(value)
         except Exception:
-            row[key] = value
+            value_out = decode_hdf5_scalar(value)
+
+        if key in row:
+            # Do not overwrite resolved hyperparameters / metadata.
+            row[f"metric_{key}"] = value_out
+            metric_key_collisions.append(key)
+        else:
+            row[key] = value_out
+
+    row["_metric_key_collisions"] = metric_key_collisions
 
     if "imag_flags" in run_group:
         row["n_imag_model"] = int(np.sum(run_group["imag_flags"][()]))
@@ -558,7 +638,7 @@ def probability_best_from_beta(records, n_samples=20000, seed=123):
 # Printing functions
 # ============================================================
 
-def print_best_models(rows, n=7, metric="composite_score"):
+def print_best_models(rows, n=5, metric="composite_score"):
     rows = [r for r in rows if metric in r and np.isfinite(get_float(r, metric))]
     if not rows:
         print(f"No rows with metric: {metric}")
@@ -568,7 +648,7 @@ def print_best_models(rows, n=7, metric="composite_score"):
 
     print()
     print(f"BEST {n} MODELS BY {metric}")
-    print("-" * 130)
+    print("-" * 150)
 
     header = (
         f"{'#':>2} "
@@ -597,12 +677,12 @@ def print_best_models(rows, n=7, metric="composite_score"):
             f"{i:>2d} "
             f"{str(r.get('structure', '--')):<14.14} "
             f"{str(r.get('path_split', r.get('split', '--'))):<22.22} "
-            f"{format_latex_number(r.get('size'), 0):>8} "
+            f"{format_latex_int(r.get('size')):>8} "
             f"{format_latex_number(r.get('split_val'), 3):>9} "
             f"{format_latex_number(r.get('r_max'), 3):>7} "
             f"{format_latex_number(r.get('energy_weight'), 3):>7} "
             f"{format_latex_number(r.get('forces_weight'), 3):>7} "
-            f"{format_latex_number(r.get('seed'), 0):>6} "
+            f"{format_latex_int(r.get('seed')):>6} "
             f"{format_latex_number(r.get(metric), 5):>10} "
             f"{format_latex_number(r.get('freq_mae_ir_cm1'), 4):>10} "
             f"{format_latex_number(r.get('intensity_pearson_r'), 4):>10} "
@@ -611,12 +691,12 @@ def print_best_models(rows, n=7, metric="composite_score"):
 
     print()
     print("LATEX TABLE")
-    print("-" * 130)
-    print(r"\begin{table}[ht]")
+    print("-" * 150)
+    print(r"\begin{table}[htbp!]")
     print(r"\centering")
-    print(r"\begin{tabular}{rrrrrrrrrr}")
+    print(r"\begin{tabular}{rrrrrrrrr}")
     print(r"\hline")
-    print(r"$N$ & $s_\mathrm{val}$ & $r_\mathrm{max}$ & $w_E$ & $w_F$ & seed & score & freq. MAE & $r_I$ & overlap \\")
+    print(r"$r_\mathrm{max}$ & $w_E$ & $w_F$ &$ N$ & split & seed & score & freq. MAE  & overlap \\")
     print(r"\hline")
 
     for r in rows:
@@ -624,16 +704,16 @@ def print_best_models(rows, n=7, metric="composite_score"):
         if not np.isfinite(overlap):
             overlap = get_float(r, "diagonal_overlap_mean")
         print(
-            f"{format_latex_number(r.get('size'), 0)} & "
-            f"{format_latex_number(r.get('split_val'), 3)} & "
             f"{format_latex_number(r.get('r_max'), 3)} & "
             f"{format_latex_number(r.get('energy_weight'), 3)} & "
             f"{format_latex_number(r.get('forces_weight'), 3)} & "
-            f"{format_latex_number(r.get('seed'), 0)} & "
-            f"{format_latex_number(r.get(metric), 5)} & "
-            f"{format_latex_number(r.get('freq_mae_ir_cm1'), 4)} & "
-            f"{format_latex_number(r.get('intensity_pearson_r'), 3)} & "
-            f"{format_latex_number(overlap, 4)} \\\\"
+            f"{format_latex_int(r.get('size'))} & "
+            f"{format_latex_number(r.get('split_val'), 3)} & "
+            f"{format_latex_int(r.get('seed'))} & "
+            f"{format_latex_number_tab(r.get(metric), 2)} & "
+            f"{format_latex_number_tab(r.get('freq_mae_ir_cm1'), 3)} & "
+            # f"{format_latex_number(r.get('intensity_pearson_r'), 3)} & "
+            f"{format_latex_number_tab(overlap, 3)} \\\\"
         )
 
     print(r"\hline")
@@ -766,11 +846,11 @@ def print_hyperparameter_ranking(
     print()
     print("LATEX TABLE")
     print("-" * 150)
-    print(r"\begin{table}[ht]")
+    print(r"\begin{table}[htbp!]")
     print(r"\centering")
-    print(r"\begin{tabular}{rrrrrrrrrrrr}")
+    print(r"\begin{tabular}{rrrrrrrrrr}")
     print(r"\hline")
-    print(r"$r_\mathrm{max}$ & $w_E$ & $w_F$ & $n$ & $N$ & $s_\mathrm{val}$ & median & mean & std & best & freq. MAE & $r_I$ \\")
+    print(r"$r_\mathrm{max}$ & $w_E$ & $w_F$ & $n$ & $N$ & split & median & mean & std & best score \\")
     print(r"\hline")
     for r in records[:n_best]:
         print(
@@ -780,12 +860,10 @@ def print_hyperparameter_ranking(
             f"{r['n_runs']} & "
             f"{r['size_text']} & "
             f"{r['split_text']} & "
-            f"{format_latex_number(r['median_score'], 4)} & "
-            f"{format_latex_number(r['mean_score'], 4)} & "
-            f"{format_latex_number(r['std_score'], 3)} & "
-            f"{format_latex_number(r['best_score'], 4)} & "
-            f"{format_latex_number(r['median_freq_mae'], 4)} & "
-            f"{format_latex_number(r['median_intensity_r'], 3)} \\\\"
+            f"{format_latex_number_tab(r['median_score'], 2)} & "
+            f"{format_latex_number_tab(r['mean_score'], 2)} & "
+            f"{format_latex_number_tab(r['std_score'], 2)} & "
+            f"{format_latex_number_tab(r['best_score'], 2)} \\\\ "
         )
     print(r"\hline")
     print(r"\end{tabular}")
@@ -1286,7 +1364,8 @@ def summarize_structure(
         print(f"{key:<35} {len(values):>6d} {np.nanmin(values):>14.6g} {np.nanmax(values):>14.6g} {np.nanmean(values):>14.6g}")
 
     print_parameter_source_summary(model_rows)
-    print_best_models(model_rows, n=7, metric="composite_score")
+    print_size_resolution_debug(model_rows)
+    print_best_models(model_rows, n=5, metric="composite_score")
 
     if rank_hyperparams:
         print_hyperparameter_ranking(model_rows, metric=rank_metric, n_best=rank_top, success_quantile=success_quantile)
@@ -1377,7 +1456,8 @@ def summarize_combined_structures(
         print("Raw metric values are used directly.")
 
     print_parameter_source_summary(all_rows)
-    print_best_models(all_rows, n=7, metric=analysis_metric)
+    print_size_resolution_debug(all_rows)
+    print_best_models(all_rows, n=5, metric=analysis_metric)
 
     if rank_hyperparams:
         print_hyperparameter_ranking(all_rows, metric=analysis_metric, n_best=rank_top, success_quantile=success_quantile)
@@ -1408,7 +1488,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rank-hyperparams", action="store_true", help="Rank r_max, energy_weight, forces_weight combinations by median score.")
     parser.add_argument("--rank-metric", default="composite_score", help="Metric used for hyperparameter ranking.")
-    parser.add_argument("--rank-top", type=int, default=20, help="Number of combinations to print.")
+    parser.add_argument("--rank-top", type=int, default=5, help="Number of combinations to print.")
     parser.add_argument("--pool-hyperparams", action="store_true", help="Print pooled main-effect ranking for r_max, energy_weight, forces_weight, size, and split_val.")
     parser.add_argument("--size-interactions", action="store_true", help="Print size/split_val interaction rankings.")
     parser.add_argument("--prob_hyperparams", action="store_true", help="Estimate probability that parameters yield top-performing models.")
